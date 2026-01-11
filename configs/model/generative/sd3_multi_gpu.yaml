@@ -1,0 +1,35 @@
+# SD3 Multi-GPU Configuration
+# Use this config for distributing SD3 across multiple GPUs
+
+# HuggingFace model path
+model_path: "stabilityai/stable-diffusion-3-medium-diffusers"
+
+# Text prompt template
+prompt_template: "a photo of a {}"
+
+# Flow matching timestep
+timestep: 0.25
+
+# TopK selection
+topk: 1
+classes_threshold: 20
+
+# Sliding window
+crop_size: [512, 512]
+slide_stride: [0, 171]
+
+# VAE on first GPU
+vae_device: "cuda:0"
+
+# Transformer distributed across GPUs
+# SD3 Medium has 24 transformer blocks
+transformer_device_config:
+  device_map: "balanced"  # Auto-balance across available GPUs
+  input_device: "cuda:0"
+  output_device: "cuda:0"
+
+# Gradient checkpointing
+gradient_checkpointing: true
+
+# Embeddings cache
+embeddings_cache_path: "cache/sd3_ade20k_embeddings.pt"

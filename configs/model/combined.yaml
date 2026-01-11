@@ -1,0 +1,11 @@
+# Combined Model Configuration
+# Combines discriminative (SegFormer) and generative (SD3) models
+
+defaults:
+  - discriminative: segformer_b5
+  - generative: sd3
+
+# Model update settings
+update_discriminative: true
+update_generative: true
+update_norm_only: false  # If true, only update norm layers in discriminative model

@@ -1,0 +1,36 @@
+# SD3 Generative Model Configuration
+# Stable Diffusion 3 for diffusion-guided TTA
+
+# HuggingFace model path
+model_path: "stabilityai/stable-diffusion-3-medium-diffusers"
+
+# Text prompt template for class embeddings
+prompt_template: "a photo of a {}"
+
+# Flow matching timestep (fixed at 0.25 as per original)
+timestep: 0.25
+
+# TopK selection for class-conditional generation
+topk: 1
+classes_threshold: 20
+
+# Sliding window configuration
+crop_size: [512, 512]
+slide_stride: [0, 171]  # No vertical stride, horizontal stride of 171
+
+# Device configuration
+vae_device: "cuda:0"
+
+# Transformer device configuration
+# Options:
+#   - Single GPU: {"device": "cuda:0"}
+#   - Auto-balanced multi-GPU: {"device_map": "balanced", "input_device": "cuda:0", "output_device": "cuda:0"}
+#   - Manual device map: {"device_map": {...}, "input_device": "cuda:0", "output_device": "cuda:0"}
+transformer_device_config:
+  device: "cuda:0"
+
+# Use gradient checkpointing to save memory
+gradient_checkpointing: true
+
+# Optional path to cache precomputed embeddings
+embeddings_cache_path: null

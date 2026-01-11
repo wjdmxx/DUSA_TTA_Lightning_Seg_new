@@ -1,0 +1,27 @@
+# Lightning Trainer Configuration
+# Default settings for TTA
+
+# Accelerator and devices
+accelerator: "gpu"
+devices: 1  # Number of GPUs (use 1 for TTA, model parallelism handled separately)
+strategy: "auto"  # auto, ddp, etc.
+
+# Precision
+precision: "16-mixed"  # Use mixed precision for memory efficiency
+
+# Logging
+enable_progress_bar: false  # We use custom progress bar
+enable_model_summary: false
+
+# Checkpointing (disabled for TTA)
+enable_checkpointing: false
+
+# Determinism
+deterministic: false
+
+# Debugging
+fast_dev_run: false
+limit_test_batches: 1.0  # Set to smaller value for debugging
+
+# Logging frequency
+log_every_n_steps: 1
