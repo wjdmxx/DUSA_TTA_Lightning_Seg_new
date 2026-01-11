@@ -1,0 +1,40 @@
+# ADE20K-C Dataset Configuration
+# Corrupted ADE20K validation set for TTA evaluation
+
+# Root directory containing the dataset
+# Expected structure:
+#   data_root/
+#     ADE20K_val-c/
+#       {corruption_type}/{severity}/validation/*.jpg
+#     annotations/
+#       validation/*.png
+data_root: "/path/to/ade20k"  # UPDATE THIS PATH
+
+# Corruption types to evaluate (all 15 by default)
+corruption_types:
+  - gaussian_noise
+  - shot_noise
+  - impulse_noise
+  - defocus_blur
+  - glass_blur
+  - motion_blur
+  - zoom_blur
+  - snow
+  - frost
+  - fog
+  - brightness
+  - contrast
+  - elastic_transform
+  - pixelate
+  - jpeg_compression
+
+# Corruption severity level (1-5)
+severity: 5
+
+# Target short side for image resizing
+target_short_side: 512
+
+# DataLoader settings
+batch_size: 1  # Keep at 1 for TTA to avoid memory issues
+num_workers: 4
+pin_memory: true

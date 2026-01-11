@@ -42,8 +42,7 @@ logs/
 wandb/
 cache/
 
-# Data
-data/
+
 *.pth
 *.pt
 *.ckpt
