@@ -1,5 +1,9 @@
 # SD3 Multi-GPU Configuration
-# Use this config for distributing SD3 across multiple GPUs
+# Use this config for distributing SD3 across multiple GPUs (Model Parallelism)
+# Recommended setup: 
+#   - Discriminative Model + VAE on cuda:0
+#   - SD3 Transformer on cuda:1
+# Requires CUDA_VISIBLE_DEVICES=0,1
 
 # HuggingFace model path
 model_path: "stabilityai/stable-diffusion-3-medium-diffusers"
@@ -17,6 +21,11 @@ classes_threshold: 20
 # Sliding window
 crop_size: [512, 512]
 slide_stride: [0, 171]
+
+# Device placement
+vae_device: "cuda:0"
+transformer_device_config:
+  device: "cuda:1"
 
 # VAE on first GPU
 vae_device: "cuda:0"
