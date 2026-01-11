@@ -1,9 +1,15 @@
 # Combined Model Configuration
 # Combines discriminative (SegFormer) and generative (SD3) models
+#
+# Default device layout (requires 2 GPUs):
+#   - cuda:0: Discriminative (SegFormer) + VAE
+#   - cuda:1: SD3 Transformer
+#
+# Usage: CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py
 
 defaults:
   - discriminative: segformer_b5
-  - generative: sd3
+  - generative: sd3_multi_gpu  # Default to multi-GPU config
 
 # Model update settings
 update_discriminative: true

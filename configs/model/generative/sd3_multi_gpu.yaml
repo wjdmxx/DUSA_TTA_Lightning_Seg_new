@@ -1,9 +1,7 @@
 # SD3 Multi-GPU Configuration
-# Use this config for distributing SD3 across multiple GPUs (Model Parallelism)
-# Recommended setup: 
-#   - Discriminative Model + VAE on cuda:0
-#   - SD3 Transformer on cuda:1
-# Requires CUDA_VISIBLE_DEVICES=0,1
+# Use this config for distributing SD3 across multiple GPUs
+# Default: Discriminative(cuda:0) + VAE(cuda:0) + Transformer(cuda:1)
+# Usage: CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py model/generative=sd3_multi_gpu
 
 # HuggingFace model path
 model_path: "stabilityai/stable-diffusion-3-medium-diffusers"
@@ -22,23 +20,16 @@ classes_threshold: 20
 crop_size: [512, 512]
 slide_stride: [0, 171]
 
-# Device placement
+# VAE on first GPU (cuda:0) - shares GPU with discriminative model
 vae_device: "cuda:0"
+
+# Transformer on second GPU (cuda:1) - separate GPU for memory efficiency
+# This is the largest component and benefits from dedicated GPU
 transformer_device_config:
   device: "cuda:1"
 
-# VAE on first GPU
-vae_device: "cuda:0"
-
-# Transformer distributed across GPUs
-# SD3 Medium has 24 transformer blocks
-transformer_device_config:
-  device_map: "balanced"  # Auto-balance across available GPUs
-  input_device: "cuda:0"
-  output_device: "cuda:0"
-
-# Gradient checkpointing
+# Gradient checkpointing - reduces memory usage at cost of some speed
 gradient_checkpointing: true
 
-# Embeddings cache
+# Embeddings cache - speeds up loading on subsequent runs
 embeddings_cache_path: "cache/sd3_ade20k_embeddings.pt"

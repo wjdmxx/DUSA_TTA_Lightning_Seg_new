@@ -51,18 +51,52 @@ dusa_tta_lightning/
 
 ## Usage
 
-### Basic Usage
+### Default Usage (Dual GPU - Recommended)
 
+By default, the project is configured to run on **2 GPUs** to handle memory constraints. The models are distributed as follows:
+
+| Component | Device | Memory Usage (approx.) |
+|-----------|--------|------------------------|
+| SegFormer (Discriminative) | `cuda:0` | ~2GB |
+| VAE (SD3 Encoder) | `cuda:0` | ~1GB |
+| SD3 Transformer | `cuda:1` | ~12GB |
+
+**Run with:**
 ```bash
-python scripts/run_tta.py data.data_root=/path/to/ade20k
+# Linux/Mac
+CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py data.data_root=/path/to/ade20k
+
+# Windows (PowerShell)
+$env:CUDA_VISIBLE_DEVICES="0,1"; python scripts/run_tta.py data.data_root=/path/to/ade20k
+
+# Windows (CMD)
+set CUDA_VISIBLE_DEVICES=0,1 && python scripts/run_tta.py data.data_root=/path/to/ade20k
 ```
 
-### Multi-GPU Mode
+### Single GPU Mode (High VRAM Required)
+
+If you have a single GPU with ≥24GB VRAM, you can use single GPU mode:
 
 ```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/run_tta.py \
+    data.data_root=/path/to/ade20k \
+    model/generative=sd3
+```
+
+### Custom GPU Assignment
+
+You can customize which GPUs to use:
+
+```bash
+# Use GPU 2 and 3 instead of 0 and 1
+CUDA_VISIBLE_DEVICES=2,3 python scripts/run_tta.py data.data_root=/path/to/ade20k
+
+# Or override device config directly
 python scripts/run_tta.py \
     data.data_root=/path/to/ade20k \
-    model/generative=sd3_multi_gpu
+    model.discriminative.device=cuda:0 \
+    model.generative.vae_device=cuda:0 \
+    model.generative.transformer_device_config.device=cuda:1
 ```
 
 ### Configuration Override Examples

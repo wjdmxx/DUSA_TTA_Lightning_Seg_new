@@ -327,6 +327,24 @@ class SD3GenerativeModel(nn.Module):
         
         return weighted
     
+    def _get_transformer_device(self) -> torch.device:
+        """Get the device where transformer input should be placed."""
+        if hasattr(self.transformer, "device"):
+            return self.transformer.device
+        elif hasattr(self.transformer, "model"):
+            # Wrapped model
+            if hasattr(self.transformer.model, "device"):
+                return self.transformer.model.device
+            # Try to get device from first parameter
+            try:
+                return next(self.transformer.model.parameters()).device
+            except StopIteration:
+                pass
+        # Fallback: check config
+        if "device" in self.transformer_device_config:
+            return torch.device(self.transformer_device_config["device"])
+        return torch.device("cuda:0")
+    
     def single_window_forward(
         self,
         images: torch.Tensor,
@@ -335,6 +353,11 @@ class SD3GenerativeModel(nn.Module):
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Compute loss for a single sliding window.
+        
+        Handles multi-GPU setup where:
+        - VAE is on vae_device (e.g., cuda:0)
+        - Transformer is on transformer_device (e.g., cuda:1)
+        - Logits are on discriminative device (e.g., cuda:0)
         
         Args:
             images: Input images of shape (B, 3, crop_h, crop_w) in [0, 255]
@@ -346,22 +369,23 @@ class SD3GenerativeModel(nn.Module):
             Else: (task_loss, aux_loss) for gradient separation
         """
         B = images.shape[0]
-        device = logits.device  # Use logits device as reference (from discriminative model)
+        logits_device = logits.device  # Discriminative model device (for loss computation)
+        transformer_device = self._get_transformer_device()  # Transformer device
         
         # 1. Preprocess images for generative model: [0,255] -> [-1,1]
         preprocessed = self.preprocessor(images.to(self.vae_device), resize=True)  # (B, 3, 512, 512)
         
-        # 2. Encode to latent space (stays on VAE device)
-        latent = self.encode_to_latent(preprocessed)  # (B, 4, 64, 64)
+        # 2. Encode to latent space (on VAE device)
+        latent = self.encode_to_latent(preprocessed)  # (B, 4, 64, 64) on vae_device
         
-        # 3. Sample noise and timestep (on same device as latent)
+        # 3. Sample noise and timestep (on VAE device, will be moved to transformer later)
         noise = torch.randn_like(latent)
         timestep = torch.full((B,), self.timestep, device=latent.device, dtype=latent.dtype)
         
-        # 4. Add noise using flow matching
+        # 4. Add noise using flow matching (still on VAE device)
         noised_latent = self.flow_matching_add_noise(latent, noise, timestep)
         
-        # 5. Resize logits to latent spatial size
+        # 5. Resize logits to latent spatial size (stays on logits device)
         latent_h, latent_w = latent.shape[2:]
         resized_logits = F.interpolate(
             logits, 
@@ -370,13 +394,13 @@ class SD3GenerativeModel(nn.Module):
             align_corners=False
         )
         
-        # 6. Select top-k classes with threshold
+        # 6. Select top-k classes with threshold (on logits device)
         topk_probs, selected_indices, mask = self.select_topk_classes(resized_logits)
         K = len(selected_indices)
         
-        # 7. Get embeddings for selected classes and move to correct device
-        class_embeds = self.class_embeddings[selected_indices].to(latent.device)  # (K, seq_len, dim)
-        pooled_embeds = self.pooled_embeddings[selected_indices].to(latent.device)  # (K, pooled_dim)
+        # 7. Get embeddings for selected classes and move to transformer device
+        class_embeds = self.class_embeddings[selected_indices].to(transformer_device)  # (K, seq_len, dim)
+        pooled_embeds = self.pooled_embeddings[selected_indices].to(transformer_device)  # (K, pooled_dim)
         
         # 8. Expand embeddings and inputs for batch processing
         # Repeat for each class: (B, ...) -> (B*K, ...)
@@ -386,10 +410,11 @@ class SD3GenerativeModel(nn.Module):
         pooled_embeds = pooled_embeds.unsqueeze(0).expand(B, -1, -1)  # (B, K, pooled_dim)
         pooled_embeds = pooled_embeds.reshape(B * K, -1)  # (B*K, pooled_dim)
         
-        noised_latent_expanded = noised_latent.repeat_interleave(K, dim=0)  # (B*K, 4, H, W)
-        timestep_expanded = timestep.repeat_interleave(K, dim=0)  # (B*K,)
+        # Move noised latent to transformer device
+        noised_latent_expanded = noised_latent.to(transformer_device).repeat_interleave(K, dim=0)  # (B*K, 4, H, W)
+        timestep_expanded = timestep.to(transformer_device).repeat_interleave(K, dim=0)  # (B*K,)
         
-        # 9. Transformer forward pass - predict velocity
+        # 9. Transformer forward pass - predict velocity (on transformer device)
         # SD3 uses timestep in [0, 1000] range
         pred_velocity = self.transformer(
             hidden_states=noised_latent_expanded.to(class_embeds.dtype),
@@ -397,17 +422,18 @@ class SD3GenerativeModel(nn.Module):
             encoder_hidden_states=class_embeds,
             pooled_projections=pooled_embeds,
             return_dict=False,
-        )[0]  # (B*K, 4, H, W)
+        )[0]  # (B*K, 4, H, W) on transformer device
         
-        # 10. Move all tensors to consistent device (logits device) for loss computation
-        pred_velocity = pred_velocity.float().to(device)
-        topk_probs = topk_probs.float().to(device)
+        # 10. Move all tensors to logits device for loss computation
+        # This ensures gradients flow back correctly through both paths
+        pred_velocity = pred_velocity.float().to(logits_device)
+        topk_probs = topk_probs.float().to(logits_device)
         
-        # 11. Compute target velocity: v = noise - x_0
-        target_velocity = (noise - latent).float().to(device)
+        # 11. Compute target velocity: v = noise - x_0 (move to logits device)
+        target_velocity = (noise - latent).float().to(logits_device)
         
-        # 12. Apply mask
-        mask = mask.to(device)
+        # 12. Apply mask (move to logits device)
+        mask = mask.to(logits_device)
         pred_velocity = pred_velocity * mask.repeat_interleave(K, dim=0).expand_as(pred_velocity)
         target_velocity = target_velocity * mask.expand_as(target_velocity)
         

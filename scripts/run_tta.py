@@ -141,10 +141,37 @@ def main(cfg: DictConfig) -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for DUSA TTA")
     
+    num_gpus = torch.cuda.device_count()
     print(f"CUDA available: {torch.cuda.is_available()}")
-    print(f"Number of GPUs: {torch.cuda.device_count()}")
-    for i in range(torch.cuda.device_count()):
-        print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+    print(f"Number of GPUs: {num_gpus}")
+    for i in range(num_gpus):
+        print(f"  GPU {i}: {torch.cuda.get_device_name(i)} ({torch.cuda.get_device_properties(i).total_memory / 1024**3:.1f} GB)")
+    
+    # Validate GPU configuration
+    vae_device = cfg.model.generative.get("vae_device", "cuda:0")
+    transformer_config = cfg.model.generative.get("transformer_device_config", {"device": "cuda:0"})
+    transformer_device = transformer_config.get("device", "cuda:0") if isinstance(transformer_config, dict) else "cuda:0"
+    discriminative_device = cfg.model.discriminative.get("device", "cuda:0")
+    
+    print(f"\nDevice configuration:")
+    print(f"  Discriminative (SegFormer): {discriminative_device}")
+    print(f"  VAE: {vae_device}")
+    print(f"  Transformer: {transformer_device}")
+    
+    # Check if required GPUs are available
+    required_devices = set()
+    for dev in [vae_device, transformer_device, discriminative_device]:
+        if dev.startswith("cuda:"):
+            gpu_id = int(dev.split(":")[1])
+            required_devices.add(gpu_id)
+    
+    max_required = max(required_devices) if required_devices else 0
+    if max_required >= num_gpus:
+        raise RuntimeError(
+            f"Configuration requires GPU {max_required}, but only {num_gpus} GPU(s) available.\n"
+            f"Hint: Set CUDA_VISIBLE_DEVICES environment variable to expose more GPUs.\n"
+            f"Example: CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py ..."
+        )
     
     # Build components
     print("\nBuilding model...")

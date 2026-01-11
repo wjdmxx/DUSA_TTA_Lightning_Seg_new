@@ -139,6 +139,11 @@ class DUSATTAModule(pl.LightningModule):
         2. Compute DUSA loss using generative model
         3. Backward and update parameters
         4. Compute predictions and update metrics
+        
+        Note: In multi-GPU setup, data flows as:
+        - Images: CPU -> discriminative device (cuda:0) -> VAE device -> transformer device
+        - Logits: discriminative device -> used for loss computation
+        - Loss: computed on discriminative device for proper gradient flow
         """
         optimizer = self.optimizers()
         
@@ -146,19 +151,23 @@ class DUSATTAModule(pl.LightningModule):
         labels = batch["label"]  # (B, H, W)
         original_sizes = batch["original_size"]  # List of (H, W)
         
-        # Get device
-        device = images.device
+        # Get discriminative model device for proper data placement
+        discriminative_device = self.model.discriminative.device
+        
+        # Move images to discriminative model device
+        images = images.to(discriminative_device)
         
         # Zero gradients
         if optimizer is not None:
             optimizer.zero_grad()
         
-        # 1. Forward through discriminative model
+        # 1. Forward through discriminative model (handles device internally)
         with torch.cuda.amp.autocast(enabled=self.use_amp):
             logits, preproc_size = self.model(images)
         
         # 2. Compute DUSA loss and backward
         # Returns (final_loss_tensor, accumulated_loss_value)
+        # Note: compute_tta_loss handles cross-device data transfer internally
         final_loss, accumulated_loss_value = self.model.compute_tta_loss(images, logits)
         
         # Backward for the last window's loss
@@ -186,9 +195,13 @@ class DUSATTAModule(pl.LightningModule):
             )
             preds = upsampled_logits.argmax(dim=1)  # (B, H, W)
             
-            # Update metrics
-            self.metrics.update(preds, labels)
-            self.per_class_iou.update(preds, labels)
+            # Move predictions and labels to CPU for metrics to avoid device mismatch
+            preds_cpu = preds.cpu()
+            labels_cpu = labels.cpu()
+            
+            # Update metrics (on CPU to avoid multi-GPU issues)
+            self.metrics.update(preds_cpu, labels_cpu)
+            self.per_class_iou.update(preds_cpu, labels_cpu)
         
         # Update running statistics
         self.running_loss += loss_value
