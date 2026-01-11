@@ -8,7 +8,7 @@
 #       {corruption_type}/{severity}/validation/*.jpg
 #     annotations/
 #       validation/*.png
-data_root: "/path/to/ade20k"  # UPDATE THIS PATH
+data_root: "/mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data/"  # UPDATE THIS PATH
 
 # Corruption types to evaluate (all 15 by default)
 corruption_types:
