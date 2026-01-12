@@ -84,7 +84,7 @@ class SD3GenerativeModel(nn.Module):
         # Load pipeline
         pipe = StableDiffusion3Pipeline.from_pretrained(
             self.model_path,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.float32,
         )
 
         # Setup text embeddings (do this before distributing transformer)
@@ -365,11 +365,9 @@ class SD3GenerativeModel(nn.Module):
 
         # Move to transformer device
         transformer_device = self._get_transformer_device()
-        noised_latent_for_transformer = noised_latent_expanded.to(
-            transformer_device, dtype=torch.float16
-        )
-        class_emb = class_emb.to(transformer_device, dtype=torch.float16)
-        pooled_emb = pooled_emb.to(transformer_device, dtype=torch.float16)
+        noised_latent_for_transformer = noised_latent_expanded.to(transformer_device)
+        class_emb = class_emb.to(transformer_device)
+        pooled_emb = pooled_emb.to(transformer_device)
 
         # Forward through transformer: output [B*N, C, H, W]
         pred_velocity = self.transformer(
@@ -415,9 +413,5 @@ class SD3GenerativeModel(nn.Module):
         # Transformer gradients
         if requires_grad:
             self.transformer.requires_grad_(True)
-            # Convert trainable params to float32 for gradient computation
-            for param in self.transformer.parameters():
-                if param.requires_grad and param.dtype == torch.float16:
-                    param.data = param.data.float()
         else:
             self.transformer.requires_grad_(False)

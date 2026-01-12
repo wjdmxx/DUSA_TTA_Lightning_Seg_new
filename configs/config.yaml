@@ -16,7 +16,7 @@ experiment:
 
 # Device configuration
 device:
-  precision: bf16  # bf16 | fp16 | fp32
+  precision: fp32  # bf16 | fp16 | fp32
   # num_gpus is auto-detected from CUDA_VISIBLE_DEVICES
 
 # Output directory (Hydra default)
