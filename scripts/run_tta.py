@@ -76,6 +76,10 @@ def build_combined_model(cfg: DictConfig) -> CombinedModel:
         update_generative=cfg.tta.get('update_generative', True),
     )
     
+    # Ensure uniform dtype for FSDP compatibility
+    # This must be called before trainer.fit() to avoid FSDP dtype mismatch errors
+    model.ensure_uniform_dtype(torch.float32)
+    
     # Save initial state for reset between tasks
     model.save_initial_state()
     

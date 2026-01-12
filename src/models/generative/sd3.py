@@ -54,7 +54,6 @@ class SD3GenerativeModel(nn.Module):
         classes_threshold: int = 20,
         prompt_template: str = "a photo of a {}",
         class_names: Union[str, Tuple[str, ...]] = "ADE_CATEGORIES",
-        torch_dtype: torch.dtype = torch.float16,
     ):
         """Initialize SD3 model.
         
@@ -68,7 +67,6 @@ class SD3GenerativeModel(nn.Module):
             classes_threshold: Maximum number of classes to process
             prompt_template: Template for class prompts (use {} for class name)
             class_names: Category names or key to look up
-            torch_dtype: Data type for model weights
         """
         super().__init__()
         
@@ -79,7 +77,6 @@ class SD3GenerativeModel(nn.Module):
         self.temperature = temperature
         self.classes_threshold = classes_threshold
         self.prompt_template = prompt_template
-        self.torch_dtype = torch_dtype
         
         # Resolve class names
         if isinstance(class_names, str):
@@ -93,10 +90,12 @@ class SD3GenerativeModel(nn.Module):
         self.num_classes = len(self.class_names)
         
         # Load pipeline and extract components
+        # NOTE: Load in float32 to ensure uniform dtype for FSDP compatibility.
+        # Mixed precision training is handled by PyTorch Lightning's precision setting.
         print(f"Loading SD3 from {model_path}...")
         pipe = StableDiffusion3Pipeline.from_pretrained(
             model_path,
-            torch_dtype=torch_dtype,
+            torch_dtype=torch.float32,
         )
         
         # Extract components
@@ -397,12 +396,10 @@ class SD3GenerativeModel(nn.Module):
         preprocessed = self.preprocess(images)
         
         # VAE encoding (no gradients through VAE)
+        # Cast input to VAE's dtype for compatibility with autocast
         with torch.no_grad():
-            latent = self.vae.encode(preprocessed.to(self.vae.dtype)).latent_dist.mean
+            latent = self.vae.encode(preprocessed).latent_dist.mean
             latent = latent * self.vae_scale_factor
-        
-        # Ensure latent is float32 for gradient computation
-        latent = latent.float()
         
         # Sample timesteps
         timesteps = self.sample_timestep(B, device)
@@ -449,20 +446,15 @@ class SD3GenerativeModel(nn.Module):
         # Forward through transformer
         # Note: SD3 expects timestep * 1000
         pred_velocity = self.transformer(
-            hidden_states=noised_latent_expanded.to(self.transformer.dtype),
+            hidden_states=noised_latent_expanded,
             timestep=timesteps_expanded * 1000,
-            encoder_hidden_states=cond.to(self.transformer.dtype),
-            pooled_projections=pooled_cond.to(self.transformer.dtype),
+            encoder_hidden_states=cond,
+            pooled_projections=pooled_cond,
             return_dict=False,
         )[0]
         
-        # Convert to float32 for loss computation
-        pred_velocity = pred_velocity.float()
-        topk_probs = topk_probs.float()
-        mask = mask.float()
-        
         # Target: velocity = noise - latent (for flow matching)
-        target = (noise - latent).float()
+        target = noise - latent
         
         # Compute weighted loss
         loss = self.compute_weighted_loss(topk_probs, pred_velocity, target, mask)
@@ -538,10 +530,22 @@ class SD3GenerativeModel(nn.Module):
         # Transformer can be trained
         if update_transformer:
             self.transformer.requires_grad_(True)
-            
-            # Convert trainable parameters to float32 for mixed precision
-            for param in self.transformer.parameters():
-                if param.requires_grad and param.dtype == torch.float16:
-                    param.data = param.data.float()
         else:
             self.transformer.requires_grad_(False)
+    
+    def convert_to_dtype(self, dtype: torch.dtype = torch.float32) -> None:
+        """Convert all model parameters to specified dtype for FSDP compatibility.
+        
+        This ensures uniform dtype across all parameters, which is required by FSDP.
+        
+        Args:
+            dtype: Target dtype (default: torch.float32)
+        """
+        self.vae = self.vae.to(dtype)
+        self.transformer = self.transformer.to(dtype)
+        
+        # Also convert registered buffers (class embeddings)
+        if hasattr(self, 'class_embeddings'):
+            self.class_embeddings = self.class_embeddings.to(dtype)
+        if hasattr(self, 'pooled_embeddings'):
+            self.pooled_embeddings = self.pooled_embeddings.to(dtype)

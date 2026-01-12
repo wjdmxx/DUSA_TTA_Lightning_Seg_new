@@ -116,6 +116,30 @@ class CombinedModel(nn.Module):
         """
         return [p for p in self.parameters() if p.requires_grad]
     
+    def ensure_uniform_dtype(self, dtype: torch.dtype = torch.float32) -> None:
+        """Ensure all model parameters have uniform dtype for FSDP compatibility.
+        
+        FSDP requires all parameters to have the same dtype. This method converts
+        all parameters to the specified dtype.
+        
+        Args:
+            dtype: Target dtype (default: torch.float32)
+        """
+        # Convert discriminative model
+        self.discriminative = self.discriminative.to(dtype)
+        
+        # Convert generative model if present
+        if self.generative is not None:
+            if hasattr(self.generative, 'convert_to_dtype'):
+                self.generative.convert_to_dtype(dtype)
+            else:
+                self.generative = self.generative.to(dtype)
+        
+        # Verify all parameters have uniform dtype
+        dtypes = set(p.dtype for p in self.parameters())
+        if len(dtypes) > 1:
+            print(f"Warning: Model still has mixed dtypes: {dtypes}")
+    
     def get_param_groups(
         self,
         discriminative_lr: float = 1e-5,
