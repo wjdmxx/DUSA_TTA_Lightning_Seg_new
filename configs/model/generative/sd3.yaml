@@ -9,7 +9,7 @@ prompt_template: "a photo of a {}"
 class_names: "ADE_CATEGORIES"
 
 # Timestep sampling range for flow matching
-timestep_range: [0.0, 1.0]
+timestep_range: [0.25, 0.25]
 
 # Device placement for model parallelism
 # VAE and text encoders on cuda:0

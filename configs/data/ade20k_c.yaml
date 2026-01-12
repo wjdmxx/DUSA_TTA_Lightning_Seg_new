@@ -1,6 +1,6 @@
 # ADE20K-C (corrupted) dataset configuration
 
-dataset_name: "ade20k_c"
+dataset_name: "/mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data/"
 
 # Data paths
 # Directory structure:

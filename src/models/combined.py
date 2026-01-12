@@ -57,13 +57,14 @@ class CombinedModel(nn.Module):
         # Initialize generative model only if needed
         if forward_mode == "tta":
             print("Initializing generative model (SD3)...")
-            # Create a copy of generative_cfg to avoid modifying the original
+            # Create a copy of generative_cfg and merge with loss config
             gen_cfg = OmegaConf.to_container(generative_cfg, resolve=True)
+            # Add loss config parameters
+            gen_cfg["topk"] = loss_cfg.topk
+            gen_cfg["temperature"] = loss_cfg.temperature
+            gen_cfg["classes_threshold"] = loss_cfg.classes_threshold
+            # Convert back to DictConfig
             gen_cfg = OmegaConf.create(gen_cfg)
-            # Pass loss config to generative model
-            gen_cfg.topk = loss_cfg.topk
-            gen_cfg.temperature = loss_cfg.temperature
-            gen_cfg.classes_threshold = loss_cfg.classes_threshold
             self.generative = SD3GenerativeModel(gen_cfg)
         else:
             self.generative = None
