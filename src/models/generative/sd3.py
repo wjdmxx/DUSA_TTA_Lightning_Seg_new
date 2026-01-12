@@ -176,27 +176,27 @@ class SD3GenerativeModel(nn.Module):
         t = torch.rand(batch_size, device=device) * (max_t - min_t) + min_t
         return t
 
-    def get_topk_classes(
+    def select_classes(
         self,
         logits: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Get top-K classes from logits.
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Select unique classes from logits and compute probabilities.
 
         Args:
             logits: [B, num_classes, H, W]
 
         Returns:
             Tuple of:
-            - topk_probs: [B, K, H, W] softmax probabilities
-            - topk_idx: [B, K, H, W] class indices
-            - unique_classes: [N] unique class indices across batch
+            - probs: [B, N, H, W] softmax probabilities over N selected classes
+            - unique_classes: [N] selected unique class indices
         """
         B, C, H, W = logits.shape
+        device = logits.device
 
-        # Get topk values and indices
-        topk_logits, topk_idx = torch.topk(logits, self.topk, dim=1)
+        # Get topk indices per pixel to find candidate classes
+        _, topk_idx = torch.topk(logits, self.topk, dim=1)  # [B, K, H, W]
 
-        # Get unique classes
+        # Get unique classes across all pixels and batch
         unique_classes = topk_idx.unique()
 
         # Limit number of classes if needed
@@ -207,7 +207,7 @@ class SD3GenerativeModel(nn.Module):
 
             if top1_unique.shape[0] > self.classes_threshold:
                 # Random sample from top1 classes
-                perm = torch.randperm(top1_unique.shape[0])
+                perm = torch.randperm(top1_unique.shape[0], device=device)
                 unique_classes = top1_unique[perm[: self.classes_threshold]]
             else:
                 # Keep all top1, fill remaining with other classes
@@ -216,16 +216,21 @@ class SD3GenerativeModel(nn.Module):
                 ]
                 remaining = self.classes_threshold - top1_unique.shape[0]
                 if remaining > 0 and other_classes.shape[0] > 0:
-                    perm = torch.randperm(other_classes.shape[0])
+                    perm = torch.randperm(other_classes.shape[0], device=device)
                     selected_other = other_classes[perm[:remaining]]
                     unique_classes = torch.cat([top1_unique, selected_other])
                 else:
                     unique_classes = top1_unique
 
-        # Compute softmax probabilities for topk
-        topk_probs = F.softmax(topk_logits, dim=1)
+        # Gather logits for selected classes: [B, N, H, W]
+        # unique_classes: [N]
+        N = unique_classes.shape[0]
+        gathered_logits = logits[:, unique_classes, :, :]  # [B, N, H, W]
 
-        return topk_probs, topk_idx, unique_classes
+        # Compute softmax over the N selected classes
+        probs = F.softmax(gathered_logits, dim=1)  # [B, N, H, W]
+
+        return probs, unique_classes
 
     def compute_weighted_velocity(
         self,
@@ -235,19 +240,20 @@ class SD3GenerativeModel(nn.Module):
         """Compute probability-weighted velocity prediction.
 
         Args:
-            pred_velocity: [B*K, C, H, W] predicted velocities for each class
-            probs: [B, K, H, W] class probabilities
+            pred_velocity: [B*N, C, H, W] predicted velocities for N classes
+            probs: [B, N, H, W] softmax probabilities over N classes
 
         Returns:
             Weighted velocity [B, C, H, W]
         """
         B = probs.shape[0]
-        # Reshape: [B*K, C, H, W] -> [B, K, C, H, W]
+        N = probs.shape[1]
+        # Reshape: [B*N, C, H, W] -> [B, N, C, H, W]
         pred_velocity = rearrange(
-            pred_velocity, "(b k) c h w -> b k c h w", b=B
+            pred_velocity, "(b n) c h w -> b n c h w", b=B, n=N
         )
-        # Weighted sum: [B, K, H, W] x [B, K, C, H, W] -> [B, C, H, W]
-        weighted = torch.einsum("b k h w, b k c h w -> b c h w", probs, pred_velocity)
+        # Weighted sum: [B, N, H, W] x [B, N, C, H, W] -> [B, C, H, W]
+        weighted = torch.einsum("b n h w, b n c h w -> b c h w", probs, pred_velocity)
         return weighted
 
     def forward(
@@ -317,23 +323,22 @@ class SD3GenerativeModel(nn.Module):
             logits, (latent_h, latent_w)
         )
 
-        # Get top-K classes
-        topk_probs, topk_idx, unique_classes = self.get_topk_classes(
-            logits_downsampled
-        )
-        num_classes = unique_classes.shape[0]
+        # Select N unique classes and compute softmax probabilities over them
+        # probs: [B, N, H, W], unique_classes: [N]
+        probs, unique_classes = self.select_classes(logits_downsampled)
+        N = unique_classes.shape[0]
 
         # Get text embeddings for selected classes
-        class_emb = self.class_embeddings[unique_classes].to(device)
-        pooled_emb = self.pooled_embeddings[unique_classes].to(device)
+        # class_emb: [N, seq_len, hidden], pooled_emb: [N, hidden]
+        class_emb = self.class_embeddings[unique_classes.to("cpu")].to(device)
+        pooled_emb = self.pooled_embeddings[unique_classes.to("cpu")].to(device)
 
-        # Expand for batch
-        # class_emb: [num_classes, seq_len, hidden] -> [B*num_classes, seq_len, hidden]
+        # Expand for batch: [N, seq_len, hidden] -> [B*N, seq_len, hidden]
         class_emb = class_emb.unsqueeze(0).expand(B, -1, -1, -1)
-        class_emb = rearrange(class_emb, "b k s d -> (b k) s d")
+        class_emb = rearrange(class_emb, "b n s d -> (b n) s d")
 
         pooled_emb = pooled_emb.unsqueeze(0).expand(B, -1, -1)
-        pooled_emb = rearrange(pooled_emb, "b k d -> (b k) d")
+        pooled_emb = rearrange(pooled_emb, "b n d -> (b n) d")
 
         # Sample timesteps
         timesteps = self.sample_timesteps(B, device)
@@ -349,16 +354,15 @@ class SD3GenerativeModel(nn.Module):
         t_expanded = timesteps.view(B, 1, 1, 1)
         noised_latent = (1 - t_expanded) * latent + t_expanded * noise
 
-        # Expand noised latent for each class
-        # [B, C, H, W] -> [B*num_classes, C, H, W]
-        noised_latent_expanded = noised_latent.unsqueeze(1).expand(-1, num_classes, -1, -1, -1)
+        # Expand noised latent for each class: [B, C, H, W] -> [B*N, C, H, W]
+        noised_latent_expanded = noised_latent.unsqueeze(1).expand(-1, N, -1, -1, -1)
         noised_latent_expanded = rearrange(
-            noised_latent_expanded, "b k c h w -> (b k) c h w"
+            noised_latent_expanded, "b n c h w -> (b n) c h w"
         )
 
-        # Expand timesteps
-        timesteps_expanded = timesteps.unsqueeze(1).expand(-1, num_classes)
-        timesteps_expanded = rearrange(timesteps_expanded, "b k -> (b k)")
+        # Expand timesteps: [B] -> [B*N]
+        timesteps_expanded = timesteps.unsqueeze(1).expand(-1, N)
+        timesteps_expanded = rearrange(timesteps_expanded, "b n -> (b n)")
 
         # Move to transformer device
         transformer_device = self._get_transformer_device()
@@ -368,7 +372,7 @@ class SD3GenerativeModel(nn.Module):
         class_emb = class_emb.to(transformer_device, dtype=torch.float16)
         pooled_emb = pooled_emb.to(transformer_device, dtype=torch.float16)
 
-        # Forward through transformer
+        # Forward through transformer: output [B*N, C, H, W]
         pred_velocity = self.transformer(
             hidden_states=noised_latent_for_transformer,
             timestep=timesteps_expanded.to(transformer_device) * 1000,
@@ -380,39 +384,11 @@ class SD3GenerativeModel(nn.Module):
         # Move output back and convert to float32
         pred_velocity = pred_velocity.to(device, dtype=torch.float32)
 
-        # Map topk_idx to position in unique_classes
-        # Create mapping from class index to position
-        class_to_pos = torch.zeros(
-            self.class_embeddings.shape[0], dtype=torch.long, device=device
-        )
-        class_to_pos[unique_classes] = torch.arange(num_classes, device=device)
-
-        # Map topk_idx through the mapping
-        topk_pos = class_to_pos[topk_idx]  # [B, K, H, W]
-
-        # Gather predictions for topk positions
-        # pred_velocity: [B*num_classes, C, H, W]
-        # We need to select for each pixel the predictions corresponding to its topk classes
-        pred_velocity_reshaped = rearrange(
-            pred_velocity, "(b k) c h w -> b k c h w", b=B
-        )
-
-        # For each pixel, gather the K predictions
-        # topk_pos: [B, K, H, W] - positions in the num_classes predictions
-        C = pred_velocity_reshaped.shape[2]
-        gathered = torch.zeros(B, self.topk, C, latent_h, latent_w, device=device)
-
-        for k in range(self.topk):
-            pos = topk_pos[:, k, :, :]  # [B, H, W]
-            for b in range(B):
-                gathered[b, k] = pred_velocity_reshaped[b, pos[b]]
-
-        # Compute weighted prediction
-        # topk_probs: [B, K, H, W]
-        # gathered: [B, K, C, H, W]
-        weighted_pred = torch.einsum(
-            "b k h w, b k c h w -> b c h w", topk_probs, gathered
-        )
+        # Compute weighted velocity using the probs
+        # pred_velocity: [B*N, C, H, W] -> [B, N, C, H, W]
+        # probs: [B, N, H, W]
+        # weighted_pred: [B, C, H, W]
+        weighted_pred = self.compute_weighted_velocity(pred_velocity, probs)
 
         # Compute MSE loss
         loss = F.mse_loss(weighted_pred, target)
