@@ -1,23 +1,4 @@
-# Combined model configuration (discriminative + generative)
-
+# Combined model configuration
 defaults:
-  - discriminative: segformer_mit-b5
+  - discriminative: segformer_b5
   - generative: sd3
-
-# Loss settings
-loss:
-  topk: 1
-  temperature: 1.0
-  classes_threshold: 20
-
-# Optimizer settings for TTA
-optimizer:
-  type: "AdamW"
-  lr: 1.0e-5
-  weight_decay: 0.01
-
-# Which models to update during TTA
-update:
-  discriminative: true
-  generative: true
-  update_norm_only: false  # If true, only update normalization layers in discriminative model

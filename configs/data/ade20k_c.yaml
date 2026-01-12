@@ -1,47 +1,31 @@
-# ADE20K-C (corrupted) dataset configuration
+# ADE20K-C dataset configuration
 
-dataset_name: "/mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data/"
+data_root: "/mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data/"
 
-# Data paths
-# Directory structure:
-#   data_root/
-#     ADE20K_val-c/{corruption}/{severity}/validation/*.jpg
-#     annotations/validation/*.png
-data_root: "data/ade20k"
-split: "validation"
-
-# Corruption types for TTA evaluation (15 types)
-corruptions:
-  - "gaussian_noise"
-  - "shot_noise"
-  - "impulse_noise"
-  - "defocus_blur"
-  - "glass_blur"
-  - "motion_blur"
-  - "zoom_blur"
-  - "snow"
-  - "frost"
-  - "fog"
-  - "brightness"
-  - "contrast"
-  - "elastic_transform"
-  - "pixelate"
-  - "jpeg_compression"
-
-# Severity levels (1-5), default to highest severity
-severity_levels: [5]
-
-# Dataset settings
-num_classes: 150
-ignore_index: 255
-reduce_zero_label: true
-
-# DataLoader settings
-batch_size: 1  # Must be 1 to avoid memory issues
-num_workers: 4
+# Batch size (must be 1 for memory efficiency)
+batch_size: 1
+num_workers: 2
 shuffle: true
-pin_memory: true
+short_edge_size: 512
 
-# Image preprocessing (initial resize)
-preprocessing:
-  target_short_edge: 512  # Resize short edge to 512
+# Corruption severity level (1-5, 5 is most severe)
+severity: 5
+
+# List of corruption types to run
+# Default: all 15 corruption types from ADE20K-C
+corruptions:
+  - gaussian_noise
+  - shot_noise
+  - impulse_noise
+  - defocus_blur
+  - glass_blur
+  - motion_blur
+  - zoom_blur
+  - snow
+  - frost
+  - fog
+  - brightness
+  - contrast
+  - elastic_transform
+  - pixelate
+  - jpeg_compression

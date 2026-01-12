@@ -1,5 +1,6 @@
-# Main configuration file for TTA Segmentation
-# Uses Hydra for configuration management
+# Main configuration file for TTA experiments
+# Usage: python scripts/run_tta.py
+# Override values: python scripts/run_tta.py tta.forward_mode=discriminative_only
 
 defaults:
   - model: combined
@@ -7,31 +8,33 @@ defaults:
   - trainer: default
   - _self_
 
-# Experiment settings
-experiment:
-  name: "tta_segmentation"
-  seed: 42
-
-# Logging settings
-logging:
-  wandb:
-    project: "tta-segmentation"
-    entity: null  # Set your wandb entity here
-    name: ${experiment.name}
-    tags: ["tta", "segmentation", "sd3"]
-  log_dir: "logs/${experiment.name}"
+# Experiment identification
+experiment_name: "first_try"
+seed: 42
 
 # TTA settings
 tta:
-  # forward_mode: "tta" for normal TTA, "discriminative_only" for baseline without generative model
-  forward_mode: "tta"  # Options: "tta", "discriminative_only"
-  num_epochs: 1  # Number of TTA epochs per task
-  continual: false  # Whether to continue from previous task without reset
+  # Whether to reset model between tasks (continual=false means reset)
+  continual: false
+  
+  # Forward mode: "tta" for full TTA, "discriminative_only" for baseline
+  forward_mode: "tta"
+  
+  # Number of epochs per task
+  max_epochs: 1
+  
+  # Optimizer settings
+  learning_rate: 1e-05
+  weight_decay: 0.0
+  optimizer_type: "adamw"
+  betas: [0.9, 0.999]
+  
+  # Which components to update
+  update_discriminative: true
+  update_generative: true
 
-# Hydra configuration
-hydra:
-  run:
-    dir: outputs/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
-  sweep:
-    dir: outputs/${experiment.name}/multirun/${now:%Y-%m-%d_%H-%M-%S}
-    subdir: ${hydra.job.num}
+# Logging configuration
+logging:
+  wandb:
+    project: "dusa-seg-tta"
+    entity: null  # Set to your W&B username/org if needed

@@ -1,29 +1,18 @@
 # PyTorch Lightning Trainer configuration
+# Uses FSDP strategy for dual-GPU model parallelism
 
-# Accelerator and device settings
-accelerator: "gpu"
-devices: [0, 1]  # Use both GPUs for model parallelism (not data parallelism)
-strategy: "auto"  # Don't use DDP, we handle model parallelism manually
+# Number of GPUs to use
+devices: 2
 
-# Precision settings
+# FSDP strategy for model parallelism across 2 GPUs
+# Usage: CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py
+# This will distribute VAE + SegFormer on GPU 0, SD3 Transformer across GPUs
+
+# Precision: bf16 mixed precision for memory efficiency
+# Loss computation is forced to float32 to avoid overflow
 precision: "bf16-mixed"
 
-# Training settings (used as TTA epochs per task)
-max_epochs: 1
-check_val_every_n_epoch: 1
-
-# Gradient settings
-gradient_clip_val: 1.0
-accumulate_grad_batches: 1
-
-# Logging settings
-log_every_n_steps: 10
-enable_progress_bar: true
-enable_model_summary: true
-
-# Checkpointing (disabled for TTA, we reset between tasks)
+# Trainer settings
+accelerator: "gpu"
 enable_checkpointing: false
-
-# Determinism
-deterministic: false
-benchmark: true
+enable_model_summary: true

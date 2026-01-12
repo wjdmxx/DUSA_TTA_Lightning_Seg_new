@@ -1,203 +1,156 @@
-"""PyTorch Lightning DataModule for TTA."""
+"""Lightning DataModule for ADE20K-C dataset."""
 
-from typing import Optional, List, Dict, Any
+from pathlib import Path
+from typing import Optional, List
+
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader, Dataset
-from omegaconf import DictConfig
+from torch.utils.data import DataLoader
 
-from .ade20k import ADE20KCorruptedDataset, ADE20KDataset
+from .dataset import ADE20KCDataset, get_corruption_types
 
 
-class TTADataModule(pl.LightningDataModule):
-    """DataModule for TTA that creates separate dataloaders for each corruption task.
-
-    This module manages loading data for multiple corruption types and severities,
-    creating separate tasks for TTA evaluation.
+class ADE20KCDataModule(pl.LightningDataModule):
+    """Lightning DataModule for ADE20K-C test-time adaptation.
+    
+    This module manages data loading for TTA experiments, handling
+    multiple corruption types and severity levels.
     """
-
-    def __init__(self, cfg: DictConfig):
-        """Initialize DataModule.
-
-        Args:
-            cfg: Data configuration containing:
-                - data_root: Root directory of dataset
-                - corruptions: List of corruption types
-                - severity_levels: List of severity levels
-                - batch_size: Batch size (should be 1)
-                - num_workers: Number of data loading workers
-                - shuffle: Whether to shuffle data
-        """
-        super().__init__()
-        self.cfg = cfg
-        self.data_root = cfg.data_root
-        self.split = cfg.get("split", "validation")
-        self.corruptions = list(cfg.corruptions)
-        self.severity_levels = list(cfg.severity_levels)
-        self.batch_size = cfg.batch_size
-        self.num_workers = cfg.num_workers
-        self.shuffle = cfg.shuffle
-        self.pin_memory = cfg.get("pin_memory", True)
-        self.target_short_edge = cfg.preprocessing.target_short_edge
-        self.reduce_zero_label = cfg.get("reduce_zero_label", True)
-
-        # Build task list
-        self.tasks = self._build_task_list()
-
-    def _build_task_list(self) -> List[Dict[str, Any]]:
-        """Build list of tasks (corruption + severity combinations)."""
-        tasks = []
-        for corruption in self.corruptions:
-            for severity in self.severity_levels:
-                tasks.append({
-                    "corruption": corruption,
-                    "severity": severity,
-                    "name": f"{corruption}_s{severity}"
-                })
-        return tasks
-
-    def get_task_dataloader(self, task_idx: int) -> DataLoader:
-        """Get dataloader for a specific task.
-
-        Args:
-            task_idx: Index of the task
-
-        Returns:
-            DataLoader for the specified task
-        """
-        task = self.tasks[task_idx]
-        dataset = ADE20KCorruptedDataset(
-            data_root=self.data_root,
-            corruption=task["corruption"],
-            severity=task["severity"],
-            split=self.split,
-            target_short_edge=self.target_short_edge,
-            reduce_zero_label=self.reduce_zero_label,
-        )
-
-        return DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            shuffle=self.shuffle,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            drop_last=False,
-        )
-
-    def get_task_name(self, task_idx: int) -> str:
-        """Get name of a specific task."""
-        return self.tasks[task_idx]["name"]
-
-    def get_num_tasks(self) -> int:
-        """Get total number of tasks."""
-        return len(self.tasks)
-
-    def train_dataloader(self) -> DataLoader:
-        """Return train dataloader (first task by default).
-
-        Note: For TTA, we typically iterate through tasks manually,
-        but this provides a default for Lightning Trainer.
-        """
-        return self.get_task_dataloader(0)
-
-
-class SingleTaskDataModule(pl.LightningDataModule):
-    """DataModule for a single TTA task.
-
-    This is used internally when running TTA on a specific task.
-    """
-
+    
     def __init__(
         self,
-        dataset: Dataset,
+        data_root: str = "data",
+        corruption: Optional[str] = None,
+        corruptions: Optional[List[str]] = None,
+        severity: int = 5,
         batch_size: int = 1,
-        num_workers: int = 4,
+        num_workers: int = 2,
         shuffle: bool = True,
-        pin_memory: bool = True
+        short_edge_size: int = 512,
+        pin_memory: bool = True,
     ):
-        """Initialize single task DataModule.
-
+        """Initialize the DataModule.
+        
         Args:
-            dataset: Dataset instance
-            batch_size: Batch size
-            num_workers: Number of workers
-            shuffle: Whether to shuffle
-            pin_memory: Whether to pin memory
+            data_root: Root directory containing data
+            corruption: Single corruption type to use (mutually exclusive with corruptions)
+            corruptions: List of corruption types to use
+            severity: Corruption severity level (1-5)
+            batch_size: Batch size for dataloaders (should be 1 for TTA)
+            num_workers: Number of dataloader workers
+            shuffle: Whether to shuffle data
+            short_edge_size: Target size for short edge scaling
+            pin_memory: Whether to pin memory for faster GPU transfer
         """
         super().__init__()
-        self.dataset = dataset
+        self.save_hyperparameters()
+        
+        self.data_root = Path(data_root)
+        self.severity = severity
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.shuffle = shuffle
+        self.short_edge_size = short_edge_size
         self.pin_memory = pin_memory
-
+        
+        # Handle corruption(s) argument
+        if corruption is not None and corruptions is not None:
+            raise ValueError("Specify either 'corruption' or 'corruptions', not both")
+        
+        if corruption is not None:
+            self.corruptions = [corruption]
+        elif corruptions is not None:
+            self.corruptions = corruptions
+        else:
+            # Default: all 15 corruption types
+            self.corruptions = get_corruption_types()
+        
+        # Dataset instances (created in setup)
+        self._current_corruption: Optional[str] = None
+        self._dataset: Optional[ADE20KCDataset] = None
+    
+    @property
+    def current_corruption(self) -> Optional[str]:
+        """Get the currently active corruption type."""
+        return self._current_corruption
+    
+    def get_all_corruptions(self) -> List[str]:
+        """Get list of all corruption types to evaluate."""
+        return self.corruptions
+    
+    def set_corruption(self, corruption: str) -> None:
+        """Set the current corruption type and create dataset.
+        
+        Args:
+            corruption: Corruption type to use
+        """
+        if corruption not in self.corruptions:
+            raise ValueError(f"Unknown corruption: {corruption}. Available: {self.corruptions}")
+        
+        self._current_corruption = corruption
+        self._dataset = ADE20KCDataset(
+            data_root=str(self.data_root),
+            corruption=corruption,
+            severity=self.severity,
+            short_edge_size=self.short_edge_size,
+        )
+    
+    def setup(self, stage: Optional[str] = None) -> None:
+        """Setup datasets.
+        
+        Note: For TTA, we use training dataloader even though we're "testing".
+        This is because we want to enable gradient updates.
+        
+        Args:
+            stage: Stage ('fit', 'validate', 'test', 'predict')
+        """
+        # If no corruption is set, use the first one
+        if self._current_corruption is None and len(self.corruptions) > 0:
+            self.set_corruption(self.corruptions[0])
+    
     def train_dataloader(self) -> DataLoader:
+        """Get training dataloader (used for TTA).
+        
+        Returns:
+            DataLoader for TTA training
+        """
+        if self._dataset is None:
+            raise RuntimeError(
+                "Dataset not initialized. Call set_corruption() first."
+            )
+        
         return DataLoader(
-            self.dataset,
+            self._dataset,
             batch_size=self.batch_size,
             shuffle=self.shuffle,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             drop_last=False,
         )
-
-
-def create_task_datamodules(cfg: DictConfig) -> List[SingleTaskDataModule]:
-    """Create list of DataModules, one per task.
-
-    Args:
-        cfg: Data configuration
-
-    Returns:
-        List of SingleTaskDataModule instances
-    """
-    data_root = cfg.data_root
-    split = cfg.get("split", "validation")
-    corruptions = list(cfg.corruptions)
-    severity_levels = list(cfg.severity_levels)
-    batch_size = cfg.batch_size
-    num_workers = cfg.num_workers
-    shuffle = cfg.shuffle
-    pin_memory = cfg.get("pin_memory", True)
-    target_short_edge = cfg.preprocessing.target_short_edge
-    reduce_zero_label = cfg.get("reduce_zero_label", True)
-
-    datamodules = []
-
-    for corruption in corruptions:
-        for severity in severity_levels:
-            dataset = ADE20KCorruptedDataset(
-                data_root=data_root,
-                corruption=corruption,
-                severity=severity,
-                split=split,
-                target_short_edge=target_short_edge,
-                reduce_zero_label=reduce_zero_label,
-            )
-
-            dm = SingleTaskDataModule(
-                dataset=dataset,
-                batch_size=batch_size,
-                num_workers=num_workers,
-                shuffle=shuffle,
-                pin_memory=pin_memory,
-            )
-
-            datamodules.append(dm)
-
-    return datamodules
-
-
-def get_task_names(cfg: DictConfig) -> List[str]:
-    """Get list of task names.
-
-    Args:
-        cfg: Data configuration
-
-    Returns:
-        List of task names
-    """
-    names = []
-    for corruption in cfg.corruptions:
-        for severity in cfg.severity_levels:
-            names.append(f"{corruption}_s{severity}")
-    return names
+    
+    def val_dataloader(self) -> DataLoader:
+        """Get validation dataloader (same as train for TTA)."""
+        return self.train_dataloader()
+    
+    def test_dataloader(self) -> DataLoader:
+        """Get test dataloader (same as train for TTA)."""
+        return self.train_dataloader()
+    
+    def get_dataset_size(self) -> int:
+        """Get current dataset size.
+        
+        Returns:
+            Number of samples in current dataset
+        """
+        if self._dataset is None:
+            return 0
+        return len(self._dataset)
+    
+    def get_task_name(self) -> str:
+        """Get current task name for logging.
+        
+        Returns:
+            Task name string like "gaussian_noise_5"
+        """
+        if self._current_corruption is None:
+            return "unknown"
+        return f"{self._current_corruption}_{self.severity}"

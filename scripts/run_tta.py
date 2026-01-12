@@ -1,224 +1,273 @@
-"""Main script for running TTA on segmentation tasks.
+#!/usr/bin/env python
+"""Main entry point for TTA experiments.
 
 Usage:
     CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py
-    CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py experiment.name=my_exp
+    
+    # Override config values:
     CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py tta.forward_mode=discriminative_only
+    CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py data.corruptions=[gaussian_noise,fog]
 """
 
 import os
 import sys
 from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+from typing import List, Dict, Any, Optional
+from copy import deepcopy
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
+import torch
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.strategies import FSDPStrategy
 from pytorch_lightning.callbacks import TQDMProgressBar
-import wandb
-import torch
 
-from src.tta.module import TTAModule, create_tta_module
-from src.data.datamodule import TTADataModule, SingleTaskDataModule, get_task_names
-from src.data.ade20k import ADE20KCorruptedDataset
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.models.discriminative import DiscriminativeModel
+from src.models.generative.sd3 import SD3GenerativeModel
+from src.models.combined import CombinedModel
+from src.tta.module import TTAModule
+from src.data.datamodule import ADE20KCDataModule
 
 
-def setup_wandb(cfg: DictConfig) -> WandbLogger:
-    """Setup Weights & Biases logger.
-
-    Args:
-        cfg: Configuration
-
-    Returns:
-        WandbLogger instance
-    """
-    wandb_cfg = cfg.logging.wandb
-
-    logger = WandbLogger(
-        project=wandb_cfg.project,
-        entity=wandb_cfg.entity,
-        name=wandb_cfg.name,
-        tags=list(wandb_cfg.tags) if wandb_cfg.tags else None,
-        config=OmegaConf.to_container(cfg, resolve=True),
+def build_discriminative_model(cfg: DictConfig) -> DiscriminativeModel:
+    """Build discriminative model from config."""
+    return DiscriminativeModel(
+        model_name=cfg.model.discriminative.model_name,
+        num_classes=cfg.model.discriminative.num_classes,
     )
 
-    return logger
+
+def build_generative_model(cfg: DictConfig) -> Optional[SD3GenerativeModel]:
+    """Build generative model from config if TTA mode."""
+    if cfg.tta.forward_mode == "discriminative_only":
+        return None
+    
+    gen_cfg = cfg.model.generative
+    return SD3GenerativeModel(
+        model_path=gen_cfg.model_path,
+        window_size=gen_cfg.sliding_window.window_size,
+        stride=gen_cfg.sliding_window.stride,
+        timestep_range=tuple(gen_cfg.timestep_range),
+        topk=gen_cfg.topk,
+        temperature=gen_cfg.temperature,
+        classes_threshold=gen_cfg.classes_threshold,
+        prompt_template=gen_cfg.prompt,
+        class_names=gen_cfg.class_names,
+    )
 
 
-def create_trainer(cfg: DictConfig, logger: WandbLogger) -> pl.Trainer:
-    """Create PyTorch Lightning Trainer.
+def build_combined_model(cfg: DictConfig) -> CombinedModel:
+    """Build combined model from config."""
+    discriminative = build_discriminative_model(cfg)
+    generative = build_generative_model(cfg)
+    
+    model = CombinedModel(
+        discriminative=discriminative,
+        generative=generative,
+    )
+    
+    # Configure gradients
+    model.configure_grad(
+        update_discriminative=cfg.tta.get('update_discriminative', True),
+        update_generative=cfg.tta.get('update_generative', True),
+    )
+    
+    # Save initial state for reset between tasks
+    model.save_initial_state()
+    
+    return model
 
-    Args:
-        cfg: Configuration
-        logger: WandB logger
 
-    Returns:
-        Trainer instance
+def build_datamodule(cfg: DictConfig) -> ADE20KCDataModule:
+    """Build data module from config."""
+    data_cfg = cfg.data
+    return ADE20KCDataModule(
+        data_root=data_cfg.data_root,
+        corruptions=list(data_cfg.corruptions),
+        severity=data_cfg.severity,
+        batch_size=data_cfg.batch_size,
+        num_workers=data_cfg.num_workers,
+        shuffle=data_cfg.shuffle,
+        short_edge_size=data_cfg.get('short_edge_size', 512),
+    )
+
+
+def build_trainer(
+    cfg: DictConfig,
+    logger: WandbLogger,
+    task_id: int,
+) -> pl.Trainer:
+    """Build trainer for a single TTA task.
+    
+    A new trainer is created for each task so that max_epochs works correctly.
     """
     trainer_cfg = cfg.trainer
-
-    # Custom progress bar
-    progress_bar = TQDMProgressBar(refresh_rate=10)
-
-    trainer = pl.Trainer(
-        accelerator=trainer_cfg.accelerator,
-        # Don't specify devices - we handle device placement manually
-        devices=1,  # Use single GPU from Lightning's perspective
-        strategy="auto",
-        precision=trainer_cfg.precision,
-        max_epochs=cfg.tta.num_epochs,
-        gradient_clip_val=trainer_cfg.gradient_clip_val,
-        accumulate_grad_batches=trainer_cfg.accumulate_grad_batches,
-        log_every_n_steps=trainer_cfg.log_every_n_steps,
-        enable_progress_bar=trainer_cfg.enable_progress_bar,
-        enable_model_summary=False,  # We handle this manually
-        enable_checkpointing=False,  # No checkpointing for TTA
-        logger=logger,
-        callbacks=[progress_bar],
-        deterministic=trainer_cfg.deterministic,
-        benchmark=trainer_cfg.benchmark,
+    
+    # Configure FSDP strategy
+    strategy = FSDPStrategy(
+        # Let Lightning handle auto-wrapping
+        auto_wrap_policy=None,
+        # Use bf16 mixed precision handled by trainer
     )
-
+    
+    # Progress bar callback
+    callbacks = [
+        TQDMProgressBar(refresh_rate=1),
+    ]
+    
+    trainer = pl.Trainer(
+        accelerator="gpu",
+        devices=trainer_cfg.devices,
+        strategy=strategy,
+        precision=trainer_cfg.precision,
+        max_epochs=cfg.tta.max_epochs,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        logger=logger,
+        callbacks=callbacks,
+        # Disable validation
+        limit_val_batches=0,
+        num_sanity_val_steps=0,
+    )
+    
     return trainer
 
 
-@hydra.main(config_path="../configs", config_name="config", version_base=None)
-def main(cfg: DictConfig):
-    """Main entry point for TTA.
-
+def run_tta_tasks(cfg: DictConfig) -> Dict[str, float]:
+    """Run TTA on all corruption tasks.
+    
     Args:
-        cfg: Hydra configuration
+        cfg: Hydra config
+        
+    Returns:
+        Dictionary mapping task names to mIoU values
     """
-    # Print configuration
-    print(OmegaConf.to_yaml(cfg))
-
-    # Set seed
-    pl.seed_everything(cfg.experiment.seed, workers=True)
-
-    # Setup W&B
-    logger = setup_wandb(cfg)
-
-    # Get task list
-    task_names = get_task_names(cfg.data)
-    num_tasks = len(task_names)
-
-    print(f"\nRunning TTA on {num_tasks} tasks:")
-    for i, name in enumerate(task_names):
-        print(f"  {i}: {name}")
-    print()
-
-    # Create TTA module once (model loading is expensive)
-    print("Creating TTA module (this may take a while for SD3)...")
-    tta_module = create_tta_module(
-        model_cfg=cfg.model,
-        tta_cfg=cfg.tta,
-        logging_cfg=cfg.logging,
-        data_cfg=cfg.data,
-        task_name="init",
-        task_idx=-1
+    # Initialize W&B logger
+    wandb_cfg = cfg.logging.wandb
+    logger = WandbLogger(
+        project=wandb_cfg.project,
+        name=cfg.experiment_name,
+        entity=wandb_cfg.get('entity', None),
+        config=OmegaConf.to_container(cfg, resolve=True),
     )
-
-    # Configure gradients and get initial state
-    tta_module.model.configure_tta_grad()
-    initial_state = tta_module.model.get_initial_state()
-
-    # Get split from config
-    split = cfg.data.get("split", "validation")
-
-    # Run TTA on each task
-    all_miou = []
-
-    for task_idx, task_name in enumerate(task_names):
+    
+    # Build model
+    print("\n" + "="*60)
+    print("Building models...")
+    print("="*60 + "\n")
+    
+    combined_model = build_combined_model(cfg)
+    
+    # Build data module
+    datamodule = build_datamodule(cfg)
+    corruptions = datamodule.get_all_corruptions()
+    
+    print(f"\nWill run TTA on {len(corruptions)} corruption types:")
+    for i, c in enumerate(corruptions):
+        print(f"  [{i}] {c}")
+    print()
+    
+    # Track results
+    results: Dict[str, float] = {}
+    all_mious: List[float] = []
+    
+    # Run TTA for each corruption task
+    for task_id, corruption in enumerate(corruptions):
         print(f"\n{'='*60}")
-        print(f"Task {task_idx}: {task_name}")
+        print(f"Task [{task_id}/{len(corruptions)}]: {corruption}")
         print(f"{'='*60}\n")
-
+        
         # Reset model if not continual
-        if not cfg.tta.continual or task_idx == 0:
+        if not cfg.tta.continual and task_id > 0:
             print("Resetting model to initial state...")
-            tta_module.model.reset_to_initial_state(initial_state)
-            tta_module.model.configure_tta_grad()
-            tta_module.model.set_eval_mode()
-
-        # Update task info
-        tta_module.task_name = task_name
-        tta_module.task_idx = task_idx
-
-        # Reset metrics
-        tta_module.train_miou.reset()
-        tta_module.train_iou_per_class.reset()
-        tta_module.train_loss_avg.reset()
-
-        # Create dataset for this task
-        corruption = task_name.rsplit("_s", 1)[0]
-        severity = int(task_name.rsplit("_s", 1)[1])
-
-        dataset = ADE20KCorruptedDataset(
-            data_root=cfg.data.data_root,
-            corruption=corruption,
-            severity=severity,
-            split=split,
-            target_short_edge=cfg.data.preprocessing.target_short_edge,
-            reduce_zero_label=cfg.data.reduce_zero_label,
+            combined_model.reset_to_initial()
+        
+        # Set current corruption
+        datamodule.set_corruption(corruption)
+        
+        # Create TTA module for this task
+        tta_module = TTAModule(
+            model=combined_model,
+            num_classes=cfg.model.discriminative.num_classes,
+            ignore_index=255,
+            learning_rate=cfg.tta.learning_rate,
+            weight_decay=cfg.tta.get('weight_decay', 0.0),
+            optimizer_type=cfg.tta.get('optimizer_type', 'adamw'),
+            betas=tuple(cfg.tta.get('betas', [0.9, 0.999])),
+            forward_mode=cfg.tta.forward_mode,
+            task_id=task_id,
+            task_name=datamodule.get_task_name(),
         )
-
-        datamodule = SingleTaskDataModule(
-            dataset=dataset,
-            batch_size=cfg.data.batch_size,
-            num_workers=cfg.data.num_workers,
-            shuffle=cfg.data.shuffle,
-            pin_memory=cfg.data.pin_memory,
-        )
-
-        # Create trainer for this task
-        trainer = create_trainer(cfg, logger)
-
+        
+        # Build trainer for this task
+        trainer = build_trainer(cfg, logger, task_id)
+        
         # Run TTA
         trainer.fit(tta_module, datamodule)
-
-        # Get final metrics
-        final_miou = tta_module.train_miou.compute().item() * 100
-
-        # Log task completion
-        if wandb.run is not None:
-            wandb.log({
-                f"task_{task_idx}_final_mIoU": final_miou,
-                "task_completed": task_idx + 1,
-            })
-
-        print(f"\nTask {task_idx} ({task_name}) completed - mIoU: {final_miou:.2f}%\n")
-
-        all_miou.append(final_miou)
-
-        # Clear cache between tasks
-        torch.cuda.empty_cache()
-
+        
+        # Get results
+        final_metrics = tta_module.get_final_metrics()
+        task_miou = final_metrics['mIoU']
+        
+        task_name = datamodule.get_task_name()
+        results[task_name] = task_miou
+        all_mious.append(task_miou)
+        
+        # Log to W&B
+        logger.log_metrics({
+            f'final/{task_name}_mIoU': task_miou,
+            'final/task_id': task_id,
+        })
+        
+        print(f"\nTask {task_name} mIoU: {task_miou:.4f}")
+    
+    # Compute and log average
+    avg_miou = sum(all_mious) / len(all_mious) if all_mious else 0.0
+    results['average'] = avg_miou
+    
+    logger.log_metrics({'final/average_mIoU': avg_miou})
+    
     # Print summary
     print("\n" + "="*60)
-    print("TTA Complete - Summary")
+    print("TTA Results Summary")
     print("="*60)
-    print(f"\nmIoU per task:")
-    for name, miou in zip(task_names, all_miou):
-        print(f"  {name}: {miou:.2f}%")
-    print(f"\nAverage mIoU: {sum(all_miou)/len(all_miou):.2f}%")
+    print(f"\n{'Task':<40} {'mIoU':>10}")
+    print("-"*52)
+    for task_name, miou in results.items():
+        if task_name != 'average':
+            print(f"{task_name:<40} {miou:>10.4f}")
+    print("-"*52)
+    print(f"{'Average':<40} {avg_miou:>10.4f}")
+    print("="*60 + "\n")
+    
+    # Finish W&B run
+    logger.finalize("success")
+    
+    return results
 
-    # Log final summary to W&B
-    if wandb.run is not None:
-        wandb.log({
-            "final_avg_mIoU": sum(all_miou) / len(all_miou),
-            "total_tasks": num_tasks,
-        })
 
-        # Log summary table
-        table_data = [[name, miou] for name, miou in zip(task_names, all_miou)]
-        table = wandb.Table(data=table_data, columns=["Task", "mIoU"])
-        wandb.log({"task_summary": table})
-
-        wandb.finish()
+@hydra.main(version_base=None, config_path="../configs", config_name="config")
+def main(cfg: DictConfig) -> None:
+    """Main entry point for TTA experiments."""
+    # Print config
+    print("\n" + "="*60)
+    print("Configuration")
+    print("="*60)
+    print(OmegaConf.to_yaml(cfg))
+    print("="*60 + "\n")
+    
+    # Set seed for reproducibility
+    if cfg.get('seed', None) is not None:
+        pl.seed_everything(cfg.seed, workers=True)
+    
+    # Run TTA
+    results = run_tta_tasks(cfg)
+    
+    print("\nTTA completed successfully!")
 
 
 if __name__ == "__main__":

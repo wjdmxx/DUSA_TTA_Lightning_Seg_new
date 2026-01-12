@@ -1,279 +1,276 @@
-"""TTA Lightning Module for test-time adaptation."""
+"""Lightning Module for Test-Time Adaptation (TTA).
 
-from typing import Dict, Any, Optional, List
+This module implements the TTA training loop using PyTorch Lightning,
+with support for FSDP and W&B logging.
+"""
+
+from typing import Optional, Dict, Any, List, Tuple
+from copy import deepcopy
+
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
+from pytorch_lightning.utilities.types import STEP_OUTPUT
 from torchmetrics import MeanMetric
-from torchmetrics.classification import MulticlassJaccardIndex
-from omegaconf import DictConfig
-import wandb
 
 from ..models.combined import CombinedModel
+from ..utils.metrics import SegmentationMetrics
 
 
 class TTAModule(pl.LightningModule):
     """Lightning Module for Test-Time Adaptation.
-
-    This module:
-    - Uses training_step but sets models to eval mode (no dropout, etc.)
-    - Computes TTA loss and backpropagates
-    - Tracks and logs mIoU metrics
-    - Logs to W&B
+    
+    Uses training_step with models in eval mode for TTA updates.
+    Supports both full TTA and discriminative-only baseline modes.
     """
-
+    
     def __init__(
         self,
-        model_cfg: DictConfig,
-        optimizer_cfg: DictConfig,
-        tta_cfg: DictConfig,
-        logging_cfg: DictConfig,
+        model: CombinedModel,
         num_classes: int = 150,
         ignore_index: int = 255,
-        task_name: str = "task_0",
-        task_idx: int = 0
+        learning_rate: float = 1e-5,
+        weight_decay: float = 0.0,
+        optimizer_type: str = "adamw",
+        betas: Tuple[float, float] = (0.9, 0.999),
+        forward_mode: str = "tta",
+        task_id: int = 0,
+        task_name: str = "unknown",
     ):
-        """Initialize TTA Module.
-
+        """Initialize TTA module.
+        
         Args:
-            model_cfg: Model configuration
-            optimizer_cfg: Optimizer configuration
-            tta_cfg: TTA configuration
-            logging_cfg: Logging configuration
+            model: Combined model for TTA
             num_classes: Number of segmentation classes
-            ignore_index: Index to ignore in evaluation
-            task_name: Name of current task for logging
-            task_idx: Index of current task for logging
+            ignore_index: Label value to ignore in metrics
+            learning_rate: Learning rate for optimizer
+            weight_decay: Weight decay for optimizer
+            optimizer_type: Type of optimizer ('adam', 'adamw')
+            betas: Beta coefficients for Adam
+            forward_mode: 'tta' for full TTA, 'discriminative_only' for baseline
+            task_id: Current task index (for logging)
+            task_name: Current task name (for logging)
         """
         super().__init__()
-        self.save_hyperparameters()
-
-        self.model_cfg = model_cfg
-        self.optimizer_cfg = optimizer_cfg
-        self.tta_cfg = tta_cfg
-        self.logging_cfg = logging_cfg
+        self.save_hyperparameters(ignore=['model'])
+        
+        self.model = model
         self.num_classes = num_classes
         self.ignore_index = ignore_index
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.optimizer_type = optimizer_type
+        self.betas = betas
+        self.forward_mode = forward_mode
+        self.task_id = task_id
         self.task_name = task_name
-        self.task_idx = task_idx
-
-        # Build combined model
-        self.model = CombinedModel(
-            discriminative_cfg=model_cfg.discriminative,
-            generative_cfg=model_cfg.generative,
-            loss_cfg=model_cfg.loss,
-            update_cfg=model_cfg.update,
-            forward_mode=tta_cfg.forward_mode
-        )
-
-        # Store initial state for reset
-        self.initial_state = None
-
+        
         # Metrics
-        self.train_miou = MulticlassJaccardIndex(
+        self.train_metrics = SegmentationMetrics(
             num_classes=num_classes,
             ignore_index=ignore_index,
-            average='macro'
         )
-        self.train_loss_avg = MeanMetric()
-
-        # Per-class IoU for detailed logging
-        self.train_iou_per_class = MulticlassJaccardIndex(
-            num_classes=num_classes,
-            ignore_index=ignore_index,
-            average=None
-        )
-
-        # Automatic optimization is enabled by default
-        self.automatic_optimization = True
-
-    def setup(self, stage: str):
-        """Setup called at the beginning of fit/test."""
-        if stage == "fit":
-            # Configure gradients for TTA
-            self.model.configure_tta_grad()
-
-            # Store initial state for reset
-            self.initial_state = self.model.get_initial_state()
-
-            # Set models to eval mode (but gradients still flow)
-            self.model.set_eval_mode()
-
-    def on_train_start(self):
-        """Called at the start of training."""
-        # Ensure models are in eval mode
-        self.model.set_eval_mode()
-
-    def training_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> Optional[torch.Tensor]:
-        """Training step for TTA.
-
-        Note: We use training_step but models are in eval mode.
-        This allows gradient computation while avoiding dropout, etc.
-
-        Args:
-            batch: Dictionary containing:
-                - "image": Image tensor of shape (B, C, H, W)
-                - "label": Ground truth labels of shape (B, H, W)
-            batch_idx: Batch index
-
-        Returns:
-            Loss tensor for backpropagation (or None if discriminative_only mode)
+        
+        # Running loss tracker
+        self.loss_tracker = MeanMetric()
+        
+        # Online mIoU for progress bar
+        self._running_miou = 0.0
+        self._sample_count = 0
+    
+    def on_train_start(self) -> None:
+        """Called at the beginning of training.
+        
+        Sets all models to eval mode for TTA.
         """
-        images = batch["image"]
-        labels = batch["label"]
-
-        # Ensure models stay in eval mode
+        # IMPORTANT: Set models to eval mode for TTA
         self.model.set_eval_mode()
-
+        
+        # Reset metrics
+        self.train_metrics.reset()
+        self.loss_tracker.reset()
+        self._running_miou = 0.0
+        self._sample_count = 0
+        
+        # Log task info
+        self.print(f"\n{'='*60}")
+        self.print(f"Starting TTA for task [{self.task_id}]: {self.task_name}")
+        self.print(f"Forward mode: {self.forward_mode}")
+        self.print(f"{'='*60}\n")
+    
+    def training_step(
+        self,
+        batch: Dict[str, torch.Tensor],
+        batch_idx: int
+    ) -> STEP_OUTPUT:
+        """Execute one TTA step.
+        
+        Args:
+            batch: Dictionary containing 'image', 'mask', etc.
+            batch_idx: Batch index
+            
+        Returns:
+            Loss tensor or None for discriminative-only mode
+        """
+        images = batch['image']  # (B, 3, H, W) in [0, 255]
+        masks = batch['mask']    # (B, H, W) with class labels
+        
         # Forward pass
-        result = self.model(images, return_predictions=True)
-        loss = result["loss"]
-        predictions = result["predictions"]
-
-        # Update metrics
-        # Move predictions and labels to same device
-        predictions = predictions.to(labels.device)
-        self.train_miou.update(predictions, labels)
-        self.train_iou_per_class.update(predictions, labels)
-
+        logits, loss = self.model(images, forward_mode=self.forward_mode)
+        
+        # Compute predictions for metrics
+        # Upsample logits to mask size for mIoU computation
+        with torch.no_grad():
+            upsampled_logits = F.interpolate(
+                logits,
+                size=masks.shape[1:],
+                mode='bilinear',
+                align_corners=False
+            )
+            predictions = upsampled_logits.argmax(dim=1)
+            
+            # Update metrics
+            self.train_metrics.update(predictions, masks)
+            
+            # Compute online mIoU
+            metrics = self.train_metrics.compute()
+            current_miou = metrics['mIoU'].item()
+            self._running_miou = current_miou
+            self._sample_count += 1
+        
+        # Log metrics
         if loss is not None:
-            self.train_loss_avg.update(loss)
-
-            # Log loss
+            self.loss_tracker.update(loss.detach())
             self.log(
-                f"{self.task_name}/loss",
+                f'task_{self.task_id}/loss',
                 loss,
                 on_step=True,
                 on_epoch=True,
-                prog_bar=True
+                prog_bar=True,
             )
-
-        # Log mIoU
-        current_miou = self.train_miou.compute()
+        
         self.log(
-            f"{self.task_name}/mIoU",
-            current_miou * 100,  # Convert to percentage
+            f'task_{self.task_id}/mIoU',
+            current_miou,
             on_step=True,
             on_epoch=True,
-            prog_bar=True
+            prog_bar=True,
         )
-
-        return loss
-
-    def on_train_epoch_end(self):
+        
+        # Return loss for backward (None if discriminative_only)
+        if loss is not None:
+            return loss
+        else:
+            # Return dummy zero loss that doesn't affect model
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
+    
+    def on_train_epoch_end(self) -> None:
         """Called at the end of training epoch."""
         # Compute final metrics
-        final_miou = self.train_miou.compute()
-        iou_per_class = self.train_iou_per_class.compute()
-
-        # Log to W&B
-        if wandb.run is not None:
-            # Log summary metrics
-            wandb.log({
-                f"{self.task_name}/final_mIoU": final_miou.item() * 100,
-                f"task_{self.task_idx}/mIoU": final_miou.item() * 100,
-            })
-
-            # Log per-class IoU
-            for i, iou in enumerate(iou_per_class):
-                if not torch.isnan(iou):
-                    wandb.log({
-                        f"{self.task_name}/class_{i}_IoU": iou.item() * 100
-                    })
-
-        # Log average loss if available
-        if self.train_loss_avg.compute() > 0:
-            avg_loss = self.train_loss_avg.compute()
-            self.log(f"{self.task_name}/avg_loss", avg_loss)
-
-        # Reset metrics for next epoch
-        self.train_miou.reset()
-        self.train_iou_per_class.reset()
-        self.train_loss_avg.reset()
-
+        metrics = self.train_metrics.compute()
+        final_miou = metrics['mIoU'].item()
+        
+        # Log epoch-level metrics
+        self.log(f'task_{self.task_id}/epoch_mIoU', final_miou)
+        
+        if self.loss_tracker.compute() is not None:
+            avg_loss = self.loss_tracker.compute().item()
+            self.log(f'task_{self.task_id}/epoch_loss', avg_loss)
+        
+        # Print summary
+        self.print(f"\n{'='*60}")
+        self.print(f"Task [{self.task_id}] {self.task_name} completed")
+        self.print(f"Final mIoU: {final_miou:.4f}")
+        self.print(f"{'='*60}\n")
+    
     def configure_optimizers(self):
-        """Configure optimizer for TTA."""
-        params = self.model.get_trainable_params()
-
-        if len(params) == 0:
-            # No trainable params (discriminative_only mode with no updates)
-            return None
-
-        optimizer_type = self.optimizer_cfg.type.lower()
-
-        if optimizer_type == "adamw":
+        """Configure optimizer for TTA.
+        
+        Returns:
+            Optimizer instance
+        """
+        # Get trainable parameters
+        trainable_params = self.model.get_trainable_params()
+        
+        if len(trainable_params) == 0:
+            # No trainable params, return dummy optimizer
+            self.print("Warning: No trainable parameters found!")
+            return torch.optim.Adam([torch.nn.Parameter(torch.zeros(1))], lr=0)
+        
+        # Create optimizer
+        if self.optimizer_type.lower() == 'adamw':
             optimizer = torch.optim.AdamW(
-                params,
-                lr=self.optimizer_cfg.lr,
-                weight_decay=self.optimizer_cfg.weight_decay
+                trainable_params,
+                lr=self.learning_rate,
+                betas=self.betas,
+                weight_decay=self.weight_decay,
             )
-        elif optimizer_type == "adam":
+        elif self.optimizer_type.lower() == 'adam':
             optimizer = torch.optim.Adam(
-                params,
-                lr=self.optimizer_cfg.lr,
-                weight_decay=self.optimizer_cfg.get("weight_decay", 0)
-            )
-        elif optimizer_type == "sgd":
-            optimizer = torch.optim.SGD(
-                params,
-                lr=self.optimizer_cfg.lr,
-                momentum=self.optimizer_cfg.get("momentum", 0.9),
-                weight_decay=self.optimizer_cfg.get("weight_decay", 0)
+                trainable_params,
+                lr=self.learning_rate,
+                betas=self.betas,
             )
         else:
-            raise ValueError(f"Unknown optimizer type: {optimizer_type}")
-
+            raise ValueError(f"Unknown optimizer type: {self.optimizer_type}")
+        
         return optimizer
-
-    def reset_to_initial(self):
-        """Reset model to initial state (before TTA)."""
-        if self.initial_state is not None:
-            self.model.reset_to_initial_state(self.initial_state)
-            # Re-configure gradients
-            self.model.configure_tta_grad()
-            # Set back to eval mode
-            self.model.set_eval_mode()
-
-    def get_predictions(self, images: torch.Tensor) -> torch.Tensor:
-        """Get predictions without computing loss.
-
-        Args:
-            images: Input images
-
+    
+    def get_final_metrics(self) -> Dict[str, float]:
+        """Get final metrics after TTA.
+        
         Returns:
-            Predictions tensor
+            Dictionary of metric name -> value
         """
-        return self.model.get_predictions(images)
+        metrics = self.train_metrics.compute()
+        return {
+            'mIoU': metrics['mIoU'].item(),
+            'accuracy': metrics['accuracy'].item(),
+        }
+    
+    def update_task_info(self, task_id: int, task_name: str) -> None:
+        """Update task information for a new task.
+        
+        Args:
+            task_id: New task index
+            task_name: New task name
+        """
+        self.task_id = task_id
+        self.task_name = task_name
+        
+        # Reset metrics for new task
+        self.train_metrics.reset()
+        self.loss_tracker.reset()
+        self._running_miou = 0.0
+        self._sample_count = 0
 
 
 def create_tta_module(
-    model_cfg: DictConfig,
-    tta_cfg: DictConfig,
-    logging_cfg: DictConfig,
-    data_cfg: DictConfig,
-    task_name: str = "task_0",
-    task_idx: int = 0
+    model: CombinedModel,
+    config: dict,
+    task_id: int = 0,
+    task_name: str = "unknown",
 ) -> TTAModule:
-    """Factory function to create TTA module.
-
+    """Factory function to create TTA module from config.
+    
     Args:
-        model_cfg: Model configuration
-        tta_cfg: TTA configuration
-        logging_cfg: Logging configuration
-        data_cfg: Data configuration (for num_classes)
-        task_name: Name of current task
-        task_idx: Index of current task
-
+        model: Combined model
+        config: Configuration dictionary
+        task_id: Task index
+        task_name: Task name
+        
     Returns:
-        TTAModule instance
+        Configured TTAModule
     """
     return TTAModule(
-        model_cfg=model_cfg,
-        optimizer_cfg=model_cfg.optimizer,
-        tta_cfg=tta_cfg,
-        logging_cfg=logging_cfg,
-        num_classes=data_cfg.num_classes,
-        ignore_index=data_cfg.ignore_index,
+        model=model,
+        num_classes=config.get('num_classes', 150),
+        ignore_index=config.get('ignore_index', 255),
+        learning_rate=config.get('learning_rate', 1e-5),
+        weight_decay=config.get('weight_decay', 0.0),
+        optimizer_type=config.get('optimizer_type', 'adamw'),
+        betas=tuple(config.get('betas', [0.9, 0.999])),
+        forward_mode=config.get('forward_mode', 'tta'),
+        task_id=task_id,
         task_name=task_name,
-        task_idx=task_idx
     )

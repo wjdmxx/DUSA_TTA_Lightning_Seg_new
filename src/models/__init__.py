@@ -1,4 +1,3 @@
-from .discriminative import SegformerModel
+from .discriminative import DiscriminativeModel
 from .combined import CombinedModel
-
-__all__ = ["SegformerModel", "CombinedModel"]
+from .generative import SD3GenerativeModel

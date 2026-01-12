@@ -1,215 +1,203 @@
-# TTA Segmentation with Generative Models
+# TTA Segmentation with Generative Model Assistance
 
-Test-Time Adaptation for semantic segmentation using Stable Diffusion 3 as auxiliary generative model.
+基于 PyTorch Lightning + Hydra 的 Test-Time Adaptation (TTA) 分割项目。
 
-## Overview
+## 项目概述
 
-This project implements Test-Time Adaptation (TTA) for semantic segmentation by combining:
-- **Discriminative Model**: Segformer (from HuggingFace Transformers)
-- **Generative Model**: Stable Diffusion 3 (SD3) for providing TTA loss signal
+本项目使用生成式模型 (Stable Diffusion 3) 辅助判别式模型 (SegFormer) 进行测试时自适应。通过在测试阶段利用 SD3 的流匹配损失来更新模型，提升在损坏图像上的分割性能。
 
-The approach uses the generative model to compute a diffusion loss based on segmentation predictions, which helps adapt the model to distribution shifts at test time.
+## 主要特性
 
-## Features
+- **PyTorch Lightning**: 清晰的训练逻辑和模块化设计
+- **Hydra**: 灵活的配置管理系统
+- **FSDP**: 双 GPU 模型并行
+- **W&B**: 完整的实验记录
+- **滑动窗口**: 沿长边滑动，适应不同图像方向
 
-- PyTorch Lightning + Hydra for clean, configurable training
-- Model parallelism: Split large SD3 transformer across multiple GPUs
-- Sliding window processing for handling variable-sized images
-- W&B logging for experiment tracking
-- Support for ADE20K-C corruption benchmark
-- bf16 mixed precision training
-
-## Requirements
+## 环境要求
 
 ```bash
-pip install torch torchvision
-pip install pytorch-lightning
-pip install hydra-core omegaconf
+# Python 3.9+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install pytorch-lightning hydra-core omegaconf
 pip install transformers diffusers accelerate
-pip install wandb
-pip install einops
-pip install pillow numpy
-pip install torchmetrics
+pip install torchmetrics wandb einops
+pip install pillow numpy tqdm
 ```
 
-## Project Structure
+## 数据准备
+
+### 目录结构
 
 ```
-seg_new/
-├── configs/
-│   ├── config.yaml              # Main configuration
-│   ├── model/
-│   │   ├── combined.yaml        # Combined model config
-│   │   ├── discriminative/
-│   │   │   └── segformer_mit-b5.yaml
-│   │   └── generative/
-│   │       └── sd3.yaml
-│   ├── data/
-│   │   └── ade20k_c.yaml
-│   └── trainer/
-│       └── default.yaml
-├── src/
-│   ├── models/
-│   │   ├── discriminative.py    # Segformer wrapper
-│   │   ├── generative/
-│   │   │   └── sd3.py           # SD3 with sliding window
-│   │   └── combined.py          # Combined model
-│   ├── tta/
-│   │   └── module.py            # Lightning module
-│   ├── data/
-│   │   ├── ade20k.py            # Dataset classes
-│   │   └── datamodule.py        # Lightning DataModule
-│   └── utils/
-│       └── categories.py        # Class definitions
-├── scripts/
-│   └── run_tta.py               # Main entry point
-└── README.md
+data/
+├── ADE20K_val-c/
+│   ├── gaussian_noise/
+│   │   └── 5/
+│   │       └── validation/
+│   │           └── *.jpg
+│   ├── fog/
+│   │   └── 5/
+│   │       └── validation/
+│   │           └── *.jpg
+│   └── ... (其他损坏类型)
+└── annotations/
+    └── validation/
+        └── *.png
 ```
 
-## Usage
-
-### Basic Usage
-
-Run TTA with default configuration:
+### 下载数据
 
 ```bash
+# 创建数据目录
+mkdir -p data && cd data
+
+# 下载 ADE20K-C (使用提供的链接)
+gdown --fuzzy https://drive.google.com/file/d/1vTYoksyYHdpARqDZxu1LRJny9__tf8xT/view
+tar -xzvf ADE20K_val-c.tar.gz
+
+# Annotations 需要从 ADE20K 原始数据集获取
+# 链接原始 ADE20K 数据集
+ln -s /path/to/ADEChallengeData2016/annotations annotations
+```
+
+## 使用方法
+
+### 基本用法
+
+```bash
+# 使用两块 GPU 运行完整 TTA
 CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py
 ```
 
-### Custom Experiment Name
+### 配置覆盖
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py experiment.name=my_experiment
-```
-
-### Baseline (Discriminative Only)
-
-Run without the generative model for comparison:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py tta.forward_mode=discriminative_only
-```
-
-### Custom Data Path
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py data.data_root=/path/to/ade20k_c
-```
-
-### Specific Corruptions
-
-```bash
+# 只运行部分损坏类型
 CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py \
-    'data.corruptions=[gaussian_noise,shot_noise,impulse_noise]'
+    data.corruptions=[gaussian_noise,fog,snow]
+
+# 只运行判别模型（用于对比实验）
+CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py \
+    tta.forward_mode=discriminative_only
+
+# 调整学习率
+CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py \
+    tta.learning_rate=0.0001
+
+# 连续测试（不重置模型）
+CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py \
+    tta.continual=true
+
+# 自定义实验名称
+CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py \
+    experiment_name="my_experiment"
 ```
 
-### Continual Adaptation
+### 配置文件
 
-Run TTA without resetting between tasks:
+主要配置文件:
+
+| 文件 | 说明 |
+|------|------|
+| `configs/config.yaml` | 主配置入口 |
+| `configs/model/combined.yaml` | 模型组合配置 |
+| `configs/model/discriminative/segformer_b5.yaml` | SegFormer 配置 |
+| `configs/model/generative/sd3.yaml` | SD3 配置 |
+| `configs/data/ade20k_c.yaml` | 数据集配置 |
+| `configs/trainer/default.yaml` | Trainer 配置 |
+
+## 项目结构
+
+```
+seg_new/
+├── configs/                    # Hydra 配置
+│   ├── config.yaml
+│   ├── model/
+│   ├── data/
+│   └── trainer/
+├── src/
+│   ├── models/
+│   │   ├── discriminative.py  # SegFormer 封装
+│   │   ├── generative/
+│   │   │   └── sd3.py         # SD3 + 滑动窗口
+│   │   └── combined.py        # 组合模型
+│   ├── tta/
+│   │   └── module.py          # Lightning TTA Module
+│   ├── data/
+│   │   ├── dataset.py         # ADE20K-C Dataset
+│   │   └── datamodule.py      # Lightning DataModule
+│   └── utils/
+│       ├── categories.py      # 类别定义
+│       └── metrics.py         # mIoU 等指标
+├── scripts/
+│   └── run_tta.py             # 程序入口
+└── README.md
+```
+
+## 核心算法
+
+### Top-K 类别选取
+
+对于每个像素，选取 logits 中的 top-k 类别进行处理。当唯一类别数超过阈值时，优先保留所有 top-1 类别，随机采样其余类别。
+
+### 加权 Loss 计算
+
+使用 softmax 概率对预测的速度场进行加权：
+
+```python
+# pred_velocity: (B*K, C, H, W) -> (B, K, C, H, W)
+weighted_pred = einsum('bkhw,bkchw->bchw', topk_probs, pred_velocity)
+loss = mse_loss(weighted_pred, target)
+```
+
+### 滑动窗口
+
+- 图像短边缩放到 512
+- 窗口大小 512x512
+- **沿长边滑动**（非固定水平方向）
+- 每个窗口独立计算 loss 后累加
+
+## W&B 日志
+
+实验会记录以下指标：
+
+- `task_{id}/loss`: 每步 loss
+- `task_{id}/mIoU`: 每步累计 mIoU
+- `final/{task_name}_mIoU`: 每个任务的最终 mIoU
+- `final/average_mIoU`: 所有任务的平均 mIoU
+
+## 常见问题
+
+### 显存不足
+
+1. 确保使用 `batch_size=1`
+2. 确保使用 `bf16-mixed` 精度
+3. 减少 `classes_threshold` 值
+
+### 模型下载问题
+
+使用镜像站点:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py tta.continual=true
+HF_ENDPOINT=https://hf-mirror.com python scripts/run_tta.py
 ```
 
-## Data Preparation
+### FSDP 相关问题
 
-### ADE20K-C Dataset
+确保：
+1. 使用 `CUDA_VISIBLE_DEVICES=0,1` 指定两块 GPU
+2. 数据和模型在相同设备上
 
-The dataset should be organized as:
+## 引用
 
+如果您使用了本项目，请引用:
+
+```bibtex
+@article{dusa2024,
+  title={DUSA: Decoupled Unsupervised Semantic Adaptation},
+  author={...},
+  journal={...},
+  year={2024}
+}
 ```
-data/ade20k_c/
-├── images/
-│   └── validation/
-│       ├── gaussian_noise_5/
-│       │   ├── ADE_val_00000001.jpg
-│       │   └── ...
-│       ├── shot_noise_5/
-│       │   └── ...
-│       └── ...
-└── annotations/
-    └── validation/
-        ├── ADE_val_00000001.png
-        └── ...
-```
-
-## Model Parallelism
-
-This project uses model parallelism to run on two GPUs:
-
-- **GPU 0 (cuda:0)**:
-  - Segformer (discriminative model)
-  - VAE encoder
-  - Text encoders
-  - First half of SD3 transformer blocks
-
-- **GPU 1 (cuda:1)**:
-  - Second half of SD3 transformer blocks
-  - Output layers
-
-This allows running the full model which would not fit on a single GPU.
-
-## Key Configuration Options
-
-### TTA Settings (`tta.forward_mode`)
-- `"tta"`: Full TTA with generative model
-- `"discriminative_only"`: Baseline without generative loss
-
-### Model Updates (`model.update`)
-- `discriminative: true/false`: Update Segformer during TTA
-- `generative: true/false`: Update SD3 during TTA
-- `update_norm_only: true/false`: Only update normalization layers
-
-### Loss Settings (`model.loss`)
-- `topk`: Number of top classes to consider per pixel
-- `classes_threshold`: Maximum unique classes per window
-- `temperature`: Softmax temperature for class probabilities
-
-## Metrics
-
-- **mIoU**: Mean Intersection over Union (primary metric)
-- Per-class IoU logged to W&B
-- Loss values for TTA monitoring
-
-## W&B Logging
-
-Results are logged to Weights & Biases:
-
-1. Set your W&B entity in the config or via environment:
-   ```bash
-   export WANDB_ENTITY=your_entity
-   ```
-
-2. Or specify in config:
-   ```yaml
-   logging:
-     wandb:
-       entity: your_entity
-   ```
-
-## Algorithm Overview
-
-1. **Image Preprocessing**: Resize input so short edge = 512
-2. **Discriminative Forward**: Get segmentation logits (at 1/4 resolution)
-3. **Sliding Window**: Process image in 512x512 windows along the long edge
-4. **TopK Selection**: Select most confident classes per window
-5. **Diffusion Loss**:
-   - Encode window to latent space
-   - Add noise at random timestep
-   - Predict velocity conditioned on class embeddings
-   - Compute MSE loss weighted by class probabilities
-6. **Backprop**: Update both discriminative and generative models
-
-## Citation
-
-If you use this code, please cite the relevant papers for:
-- Segformer
-- Stable Diffusion 3
-- Test-Time Adaptation methods
-
-## License
-
-This project is for research purposes. Please check licenses for:
-- HuggingFace Transformers
-- Diffusers
-- Stable Diffusion 3

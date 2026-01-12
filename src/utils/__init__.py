@@ -1,3 +1,2 @@
-from .categories import ADE_CATEGORIES, CITYSCAPES_CATEGORIES
-
-__all__ = ["ADE_CATEGORIES", "CITYSCAPES_CATEGORIES"]
+from .categories import ADE_CATEGORIES
+from .metrics import compute_miou

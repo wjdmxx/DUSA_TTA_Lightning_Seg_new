@@ -1,2 +1,2 @@
-# TTA Segmentation Project
-# Using Lightning + Hydra for Test-Time Adaptation with Generative Models
+# TTA Segmentation with Generative Model Assistance
+# Refactored from MMOpenLab to PyTorch Lightning + Hydra

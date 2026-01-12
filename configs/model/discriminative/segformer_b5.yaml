@@ -1,0 +1,5 @@
+# SegFormer-B5 discriminative model configuration
+# Pre-trained on ADE20K with 150 classes
+
+model_name: "nvidia/segformer-b5-finetuned-ade-640-640"
+num_classes: 150

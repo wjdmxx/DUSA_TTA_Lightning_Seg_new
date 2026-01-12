@@ -1,205 +1,187 @@
-"""Combined model that unifies discriminative and generative models for TTA."""
+"""Combined model unifying discriminative and generative models for TTA."""
 
-from typing import Dict, Tuple, Optional
+from typing import Tuple, Optional, Union
 from copy import deepcopy
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from omegaconf import DictConfig, OmegaConf
 
-from .discriminative import SegformerModel, resize_image_short_edge
-from .generative import SD3GenerativeModel
+from .discriminative import DiscriminativeModel
+from .generative.sd3 import SD3GenerativeModel
 
 
 class CombinedModel(nn.Module):
-    """Combined model for Test-Time Adaptation.
-
-    This class combines:
-    - Discriminative model (Segformer) for semantic segmentation
-    - Generative model (SD3) for providing TTA loss signal
-
-    The forward pass:
-    1. Preprocesses input image (resize short edge to 512)
-    2. Runs discriminative model to get segmentation logits
-    3. Runs generative model with logits to compute TTA loss
-    4. Returns loss for backpropagation
+    """Combined model for test-time adaptation.
+    
+    Unifies the discriminative (SegFormer) and generative (SD3) models
+    for joint inference and adaptation.
     """
-
+    
     def __init__(
         self,
-        discriminative_cfg: DictConfig,
-        generative_cfg: DictConfig,
-        loss_cfg: DictConfig,
-        update_cfg: DictConfig,
-        forward_mode: str = "tta"
+        discriminative: DiscriminativeModel,
+        generative: Optional[SD3GenerativeModel] = None,
     ):
         """Initialize combined model.
-
+        
         Args:
-            discriminative_cfg: Config for Segformer model
-            generative_cfg: Config for SD3 model
-            loss_cfg: Config for loss computation (topk, etc.)
-            update_cfg: Config for which models to update
-            forward_mode: "tta" for full TTA, "discriminative_only" for baseline
+            discriminative: Discriminative model (SegFormer)
+            generative: Optional generative model (SD3)
         """
         super().__init__()
-        self.forward_mode = forward_mode
-        self.update_cfg = update_cfg
-        self.loss_cfg = loss_cfg
-
-        # Target short edge for initial resize
-        self.target_short_edge = discriminative_cfg.preprocessing.target_short_edge
-
-        # Initialize discriminative model
-        print("Initializing discriminative model (Segformer)...")
-        self.discriminative = SegformerModel(discriminative_cfg)
-
-        # Initialize generative model only if needed
-        if forward_mode == "tta":
-            print("Initializing generative model (SD3)...")
-            # Create a copy of generative_cfg and merge with loss config
-            gen_cfg = OmegaConf.to_container(generative_cfg, resolve=True)
-            # Add loss config parameters
-            gen_cfg["topk"] = loss_cfg.topk
-            gen_cfg["temperature"] = loss_cfg.temperature
-            gen_cfg["classes_threshold"] = loss_cfg.classes_threshold
-            # Convert back to DictConfig
-            gen_cfg = OmegaConf.create(gen_cfg)
-            self.generative = SD3GenerativeModel(gen_cfg)
+        
+        self.discriminative = discriminative
+        self.generative = generative
+        
+        # Store initial state for model reset between tasks
+        self._initial_state: Optional[dict] = None
+    
+    def save_initial_state(self) -> None:
+        """Save initial model state for reset between tasks."""
+        self._initial_state = deepcopy(self.state_dict())
+    
+    def reset_to_initial(self) -> None:
+        """Reset model to initial state (for non-continual TTA)."""
+        if self._initial_state is not None:
+            self.load_state_dict(self._initial_state)
         else:
-            self.generative = None
-            print("Forward mode is 'discriminative_only', skipping generative model")
-
+            raise RuntimeError(
+                "Initial state not saved. Call save_initial_state() first."
+            )
+    
     def forward(
         self,
         images: torch.Tensor,
-        return_predictions: bool = False
-    ) -> Dict[str, torch.Tensor]:
+        forward_mode: str = "tta"
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Forward pass through combined model.
-
+        
         Args:
-            images: Input images of shape (B, C, H, W) in [0, 255] RGB format
-                   Note: images should already be resized by dataloader (short edge = 512)
-            return_predictions: Whether to return segmentation predictions
-
+            images: Input images (B, 3, H, W) in [0, 255]
+            forward_mode: 
+                - "tta": Full TTA with discriminative + generative loss
+                - "discriminative_only": Only discriminative model, no loss
+                
         Returns:
-            Dictionary containing:
-            - "loss": TTA loss (or None if discriminative_only mode)
-            - "logits": Segmentation logits at 1/4 resolution
-            - "predictions": Segmentation predictions at input resolution (if return_predictions=True)
+            Tuple of (logits, loss):
+                - logits: Segmentation logits (B, num_classes, H/4, W/4)
+                - loss: Diffusion/TTA loss or None if discriminative_only
         """
-        # Store input size (already resized by dataloader)
-        input_size = (images.shape[2], images.shape[3])
-
-        # Preprocess for discriminative model (normalize)
-        disc_input = self.discriminative.preprocess(images)
-
-        # Get segmentation logits (at 1/4 resolution)
-        logits = self.discriminative(disc_input)
-
-        result = {"logits": logits}
-
-        # Compute TTA loss if in TTA mode
-        if self.forward_mode == "tta" and self.generative is not None:
-            # Pass images (in original scale [0,255]) and logits to generative model
+        # Get discriminative predictions
+        logits = self.discriminative(images)
+        
+        # Compute generative loss based on mode
+        if forward_mode == "tta" and self.generative is not None:
+            # Compute diffusion-based loss
             loss = self.generative(images, logits)
-            result["loss"] = loss
+        elif forward_mode == "discriminative_only":
+            # No loss for comparison experiments
+            loss = None
         else:
-            # No loss in discriminative_only mode
-            result["loss"] = None
-
-        # Get predictions if requested
-        if return_predictions:
-            # Upsample logits to input image size (which is the same as label size after dataloader resize)
-            upsampled_logits = F.interpolate(
-                logits,
-                size=input_size,
-                mode='bilinear',
-                align_corners=False
-            )
-            predictions = upsampled_logits.argmax(dim=1)
-            result["predictions"] = predictions
-
-        return result
-
-    def get_predictions(
+            # No generative model or unknown mode
+            loss = None
+        
+        return logits, loss
+    
+    def configure_grad(
         self,
-        images: torch.Tensor,
-    ) -> torch.Tensor:
-        """Get segmentation predictions.
-
+        update_discriminative: bool = True,
+        update_generative: bool = True
+    ) -> None:
+        """Configure gradient computation for model components.
+        
         Args:
-            images: Input images of shape (B, C, H, W) in [0, 255] RGB format
-
-        Returns:
-            Predictions tensor of shape (B, H, W) with class indices
+            update_discriminative: Whether to train discriminative model
+            update_generative: Whether to train generative model
         """
-        with torch.no_grad():
-            result = self.forward(images, return_predictions=True)
-
-        return result["predictions"]
-
-    def configure_tta_grad(self):
-        """Configure gradient settings for TTA based on update config."""
         # Configure discriminative model
-        self.discriminative.configure_tta_grad(
-            update=self.update_cfg.discriminative,
-            norm_only=self.update_cfg.get("update_norm_only", False)
-        )
-
+        self.discriminative.requires_grad_(update_discriminative)
+        
         # Configure generative model
         if self.generative is not None:
-            self.generative.configure_tta_grad(
-                update=self.update_cfg.generative
-            )
-
-    def reset_to_initial_state(self, initial_state: Dict):
-        """Reset model to initial state.
-
+            self.generative.configure_grad(update_transformer=update_generative)
+    
+    def set_eval_mode(self) -> None:
+        """Set all models to eval mode (for TTA during training_step).
+        
+        Note: We use training_step for TTA but want eval behavior.
+        """
+        self.eval()
+    
+    def get_trainable_params(self) -> list:
+        """Get list of trainable parameters.
+        
+        Returns:
+            List of parameters with requires_grad=True
+        """
+        return [p for p in self.parameters() if p.requires_grad]
+    
+    def get_param_groups(
+        self,
+        discriminative_lr: float = 1e-5,
+        generative_lr: float = 1e-5
+    ) -> list:
+        """Get parameter groups with different learning rates.
+        
         Args:
-            initial_state: State dict from get_initial_state()
-        """
-        self.load_state_dict(initial_state, strict=False)
-
-    def get_initial_state(self) -> Dict:
-        """Get current model state for later reset.
-
+            discriminative_lr: Learning rate for discriminative model
+            generative_lr: Learning rate for generative model
+            
         Returns:
-            State dict that can be used with reset_to_initial_state()
+            List of parameter group dicts
         """
-        return {k: v.clone() for k, v in self.state_dict().items()}
-
-    def set_eval_mode(self):
-        """Set both models to eval mode but keep gradients enabled.
-
-        This is used during TTA: we want eval mode behavior (no dropout, etc.)
-        but still want to compute gradients for parameter updates.
-        """
-        self.discriminative.model.eval()
+        param_groups = []
+        
+        # Discriminative parameters
+        disc_params = [
+            p for p in self.discriminative.parameters() 
+            if p.requires_grad
+        ]
+        if disc_params:
+            param_groups.append({
+                'params': disc_params,
+                'lr': discriminative_lr,
+                'name': 'discriminative'
+            })
+        
+        # Generative parameters
         if self.generative is not None:
-            self.generative.vae.eval()
-            self.generative.transformer.eval()
+            gen_params = [
+                p for p in self.generative.parameters()
+                if p.requires_grad
+            ]
+            if gen_params:
+                param_groups.append({
+                    'params': gen_params,
+                    'lr': generative_lr,
+                    'name': 'generative'
+                })
+        
+        return param_groups
 
-    def get_trainable_params(self):
-        """Get trainable parameters for optimizer.
 
-        Returns:
-            List of parameters that require gradients
-        """
-        params = []
-
-        # Discriminative model params
-        if self.update_cfg.discriminative:
-            if self.update_cfg.get("update_norm_only", False):
-                # Only norm layer params
-                for name, module in self.discriminative.model.named_modules():
-                    if 'norm' in name.lower() or isinstance(module, (nn.LayerNorm, nn.BatchNorm2d)):
-                        params.extend(module.parameters())
-            else:
-                params.extend(self.discriminative.model.parameters())
-
-        # Generative model params
-        if self.generative is not None and self.update_cfg.generative:
-            params.extend(self.generative.transformer.parameters())
-
-        return [p for p in params if p.requires_grad]
+def build_combined_model(
+    discriminative_config: dict,
+    generative_config: Optional[dict] = None,
+) -> CombinedModel:
+    """Build combined model from configurations.
+    
+    Args:
+        discriminative_config: Config dict for discriminative model
+        generative_config: Optional config dict for generative model
+        
+    Returns:
+        Combined model instance
+    """
+    # Build discriminative model
+    discriminative = DiscriminativeModel(**discriminative_config)
+    
+    # Build generative model if configured
+    generative = None
+    if generative_config is not None:
+        generative = SD3GenerativeModel(**generative_config)
+    
+    return CombinedModel(
+        discriminative=discriminative,
+        generative=generative,
+    )
