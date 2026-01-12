@@ -1,6 +1,7 @@
 """Efficient sliding window processor using tensor operations."""
 
 import logging
+import math
 from typing import List, Tuple
 
 import torch
@@ -39,15 +40,21 @@ class SlidingWindowProcessor:
     ) -> int:
         """Compute number of windows for a given long edge size.
 
+        Uses ceiling division to ensure full image coverage.
+        For example, 682 with window_size=512 and stride=171:
+        - (682 - 512) / 171 = 0.994 -> ceil = 1
+        - 1 + 1 = 2 windows (to cover the entire image)
+
         Args:
             long_edge: Length of the long edge
 
         Returns:
-            Number of windows
+            Number of windows (ensures full coverage)
         """
         if long_edge <= self.window_size:
             return 1
-        return (long_edge - self.window_size) // self.stride + 1
+        # Use ceiling to ensure we cover the entire image
+        return math.ceil((long_edge - self.window_size) / self.stride) + 1
 
     def slide_images(
         self,
@@ -157,6 +164,7 @@ class SlidingWindowProcessor:
         self,
         logits: torch.Tensor,
         is_vertical: bool,
+        num_windows: int,
         logits_scale: int = 4,
     ) -> Tuple[torch.Tensor, List[Tuple[int, int, int, int]]]:
         """Apply sliding window to logits (which are downsampled).
@@ -164,6 +172,7 @@ class SlidingWindowProcessor:
         Args:
             logits: Input tensor [B, C, H/scale, W/scale]
             is_vertical: Whether to slide vertically
+            num_windows: Number of windows (should match image windows)
             logits_scale: Downsampling factor of logits
 
         Returns:
@@ -176,7 +185,6 @@ class SlidingWindowProcessor:
         scaled_stride = self.stride // logits_scale
 
         if is_vertical:
-            num_windows = self.compute_num_windows(H * logits_scale)
             windows_list = []
             positions = []
 
@@ -184,6 +192,7 @@ class SlidingWindowProcessor:
                 y1 = i * scaled_stride
                 y2 = y1 + scaled_window
 
+                # Handle last window - ensure it doesn't exceed bounds and covers end
                 if y2 > H:
                     y2 = H
                     y1 = max(0, H - scaled_window)
@@ -194,7 +203,6 @@ class SlidingWindowProcessor:
 
             windows = torch.cat(windows_list, dim=0)
         else:
-            num_windows = self.compute_num_windows(W * logits_scale)
             windows_list = []
             positions = []
 
@@ -202,6 +210,7 @@ class SlidingWindowProcessor:
                 x1 = i * scaled_stride
                 x2 = x1 + scaled_window
 
+                # Handle last window - ensure it doesn't exceed bounds and covers end
                 if x2 > W:
                     x2 = W
                     x1 = max(0, W - scaled_window)
@@ -233,13 +242,23 @@ class SlidingWindowProcessor:
             - logit_windows: [B * num_windows, num_classes, window_size/4, window_size/4]
             - num_windows: Number of windows
         """
-        # Slide images
+        # Slide images first to get num_windows
         image_windows, positions, is_vertical = self.slide_images(images)
-
-        # Slide logits with matching positions
-        logit_windows, _ = self.slide_logits(logits, is_vertical, logits_scale)
-
         num_windows = len(positions)
+
+        # Slide logits using the same num_windows to ensure consistency
+        logit_windows, _ = self.slide_logits(
+            logits, is_vertical, num_windows, logits_scale
+        )
+
+        # Verify consistency
+        B = images.shape[0]
+        assert image_windows.shape[0] == B * num_windows, (
+            f"Image windows mismatch: {image_windows.shape[0]} vs {B * num_windows}"
+        )
+        assert logit_windows.shape[0] == B * num_windows, (
+            f"Logit windows mismatch: {logit_windows.shape[0]} vs {B * num_windows}"
+        )
 
         return image_windows, logit_windows, num_windows
 
