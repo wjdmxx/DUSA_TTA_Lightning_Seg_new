@@ -81,10 +81,14 @@ class TTAModule(pl.LightningModule):
     def on_train_start(self) -> None:
         """Called at the beginning of training.
         
-        Sets all models to eval mode for TTA.
+        Sets all models to eval mode for TTA and moves metrics to correct device.
         """
         # IMPORTANT: Set models to eval mode for TTA
         self.model.set_eval_mode()
+        
+        # Move metrics to correct device (important for FSDP/DDP)
+        self.train_metrics.to(self.device)
+        self.loss_tracker.to(self.device)
         
         # Reset metrics
         self.train_metrics.reset()
@@ -96,6 +100,7 @@ class TTAModule(pl.LightningModule):
         self.print(f"\n{'='*60}")
         self.print(f"Starting TTA for task [{self.task_id}]: {self.task_name}")
         self.print(f"Forward mode: {self.forward_mode}")
+        self.print(f"Device: {self.device}")
         self.print(f"{'='*60}\n")
     
     def training_step(
