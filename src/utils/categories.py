@@ -1,6 +1,15 @@
+"""Category definitions for different datasets."""
+
+CITYSCAPES_CATEGORIES = (
+    'road', 'sidewalk', 'building', 'wall', 'fence', 'pole',
+    'traffic light', 'traffic sign', 'vegetation', 'terrain',
+    'sky', 'person', 'rider', 'car', 'truck', 'bus', 'train',
+    'motorcycle', 'bicycle'
+)
+
 ADE_CATEGORIES = (
     'wall', 'building', 'sky', 'floor', 'tree', 'ceiling', 'road',
-    'bed ', 'windowpane', 'grass', 'cabinet', 'sidewalk',
+    'bed', 'windowpane', 'grass', 'cabinet', 'sidewalk',
     'person', 'earth', 'door', 'table', 'mountain', 'plant',
     'curtain', 'chair', 'car', 'water', 'painting', 'sofa',
     'shelf', 'house', 'sea', 'mirror', 'rug', 'field', 'armchair',
@@ -26,5 +35,9 @@ ADE_CATEGORIES = (
     'sculpture', 'hood', 'sconce', 'vase', 'traffic light',
     'tray', 'ashcan', 'fan', 'pier', 'crt screen', 'plate',
     'monitor', 'bulletin board', 'shower', 'radiator', 'glass',
-    'clock', 'flag',
+    'clock', 'flag'
 )
+
+# Number of classes for each dataset
+ADE_NUM_CLASSES = 150
+CITYSCAPES_NUM_CLASSES = 19

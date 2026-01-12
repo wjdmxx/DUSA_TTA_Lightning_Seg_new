@@ -1,105 +1,199 @@
-import os
-from pathlib import Path
-from typing import Optional, Tuple
+"""PyTorch Lightning DataModule for TTA."""
 
-import numpy as np
+from typing import Optional, List, Dict, Any
 import pytorch_lightning as pl
-import torch
-from PIL import Image
 from torch.utils.data import DataLoader, Dataset
-import torchvision.transforms.functional as TF
+from omegaconf import DictConfig
+
+from .ade20k import ADE20KCorruptedDataset, ADE20KDataset
 
 
-class ADE20KCorruptionDataset(Dataset):
-    def __init__(
-        self,
-        data_root: str,
-        corruption: str,
-        severity: int,
-        split: str = "val",
-        short_edge: int = 512,
-    ) -> None:
+class TTADataModule(pl.LightningDataModule):
+    """DataModule for TTA that creates separate dataloaders for each corruption task.
+
+    This module manages loading data for multiple corruption types and severities,
+    creating separate tasks for TTA evaluation.
+    """
+
+    def __init__(self, cfg: DictConfig):
+        """Initialize DataModule.
+
+        Args:
+            cfg: Data configuration containing:
+                - data_root: Root directory of dataset
+                - corruptions: List of corruption types
+                - severity_levels: List of severity levels
+                - batch_size: Batch size (should be 1)
+                - num_workers: Number of data loading workers
+                - shuffle: Whether to shuffle data
+        """
         super().__init__()
-        self.data_root = Path(data_root)
-        self.corruption = corruption
-        self.severity = severity
-        self.split = split
-        self.short_edge = short_edge
-        self.image_dir = self.data_root / "ADE20K_val-c" / corruption / str(severity) / split
-        self.annotation_dir = self.data_root / "annotations" / split
-        self.image_paths = sorted([p for p in self.image_dir.glob("*.*") if p.is_file()])
+        self.cfg = cfg
+        self.data_root = cfg.data_root
+        self.corruptions = list(cfg.corruptions)
+        self.severity_levels = list(cfg.severity_levels)
+        self.batch_size = cfg.batch_size
+        self.num_workers = cfg.num_workers
+        self.shuffle = cfg.shuffle
+        self.pin_memory = cfg.get("pin_memory", True)
+        self.target_short_edge = cfg.preprocessing.target_short_edge
+        self.reduce_zero_label = cfg.get("reduce_zero_label", True)
 
-    def __len__(self):
-        return len(self.image_paths)
+        # Build task list
+        self.tasks = self._build_task_list()
 
-    def _resize_pair(self, image: Image.Image, mask: Image.Image) -> Tuple[Image.Image, Image.Image]:
-        w, h = image.size
-        short = min(h, w)
-        scale = self.short_edge / short
-        new_h, new_w = int(round(h * scale)), int(round(w * scale))
-        image = image.resize((new_w, new_h), resample=Image.BILINEAR)
-        mask = mask.resize((new_w, new_h), resample=Image.NEAREST)
-        return image, mask
+    def _build_task_list(self) -> List[Dict[str, Any]]:
+        """Build list of tasks (corruption + severity combinations)."""
+        tasks = []
+        for corruption in self.corruptions:
+            for severity in self.severity_levels:
+                tasks.append({
+                    "corruption": corruption,
+                    "severity": severity,
+                    "name": f"{corruption}_s{severity}"
+                })
+        return tasks
 
-    def __getitem__(self, idx):
-        image_path = self.image_paths[idx]
-        mask_path = self.annotation_dir / image_path.name
-        image = Image.open(image_path).convert("RGB")
-        mask = Image.open(mask_path)
-        image, mask = self._resize_pair(image, mask)
-        image_tensor = TF.to_tensor(image)
-        mask_tensor = torch.from_numpy(np.array(mask, dtype=np.int64))
-        return {"image": image_tensor, "mask": mask_tensor}
+    def get_task_dataloader(self, task_idx: int) -> DataLoader:
+        """Get dataloader for a specific task.
+
+        Args:
+            task_idx: Index of the task
+
+        Returns:
+            DataLoader for the specified task
+        """
+        task = self.tasks[task_idx]
+        dataset = ADE20KCorruptedDataset(
+            data_root=self.data_root,
+            corruption=task["corruption"],
+            severity=task["severity"],
+            target_short_edge=self.target_short_edge,
+            reduce_zero_label=self.reduce_zero_label,
+        )
+
+        return DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            drop_last=False,
+        )
+
+    def get_task_name(self, task_idx: int) -> str:
+        """Get name of a specific task."""
+        return self.tasks[task_idx]["name"]
+
+    def get_num_tasks(self) -> int:
+        """Get total number of tasks."""
+        return len(self.tasks)
+
+    def train_dataloader(self) -> DataLoader:
+        """Return train dataloader (first task by default).
+
+        Note: For TTA, we typically iterate through tasks manually,
+        but this provides a default for Lightning Trainer.
+        """
+        return self.get_task_dataloader(0)
 
 
-class ADE20KCorruptionDataModule(pl.LightningDataModule):
+class SingleTaskDataModule(pl.LightningDataModule):
+    """DataModule for a single TTA task.
+
+    This is used internally when running TTA on a specific task.
+    """
+
     def __init__(
         self,
-        data_root: str,
-        corruption: str,
-        severity: int,
-        split: str = "val",
-        short_edge: int = 512,
+        dataset: Dataset,
         batch_size: int = 1,
         num_workers: int = 4,
         shuffle: bool = True,
-    ) -> None:
+        pin_memory: bool = True
+    ):
+        """Initialize single task DataModule.
+
+        Args:
+            dataset: Dataset instance
+            batch_size: Batch size
+            num_workers: Number of workers
+            shuffle: Whether to shuffle
+            pin_memory: Whether to pin memory
+        """
         super().__init__()
-        self.data_root = data_root
-        self.corruption = corruption
-        self.severity = severity
-        self.split = split
-        self.short_edge = short_edge
+        self.dataset = dataset
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.shuffle = shuffle
-        self.dataset: Optional[ADE20KCorruptionDataset] = None
+        self.pin_memory = pin_memory
 
-    def setup(self, stage: Optional[str] = None) -> None:
-        self.dataset = ADE20KCorruptionDataset(
-            data_root=self.data_root,
-            corruption=self.corruption,
-            severity=self.severity,
-            split=self.split,
-            short_edge=self.short_edge,
-        )
-
-    def train_dataloader(self):
-        assert self.dataset is not None
+    def train_dataloader(self) -> DataLoader:
         return DataLoader(
             self.dataset,
             batch_size=self.batch_size,
             shuffle=self.shuffle,
             num_workers=self.num_workers,
-            pin_memory=True,
+            pin_memory=self.pin_memory,
+            drop_last=False,
         )
 
-    def val_dataloader(self):
-        assert self.dataset is not None
-        return DataLoader(
-            self.dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=True,
-        )
+
+def create_task_datamodules(cfg: DictConfig) -> List[SingleTaskDataModule]:
+    """Create list of DataModules, one per task.
+
+    Args:
+        cfg: Data configuration
+
+    Returns:
+        List of SingleTaskDataModule instances
+    """
+    data_root = cfg.data_root
+    corruptions = list(cfg.corruptions)
+    severity_levels = list(cfg.severity_levels)
+    batch_size = cfg.batch_size
+    num_workers = cfg.num_workers
+    shuffle = cfg.shuffle
+    pin_memory = cfg.get("pin_memory", True)
+    target_short_edge = cfg.preprocessing.target_short_edge
+    reduce_zero_label = cfg.get("reduce_zero_label", True)
+
+    datamodules = []
+
+    for corruption in corruptions:
+        for severity in severity_levels:
+            dataset = ADE20KCorruptedDataset(
+                data_root=data_root,
+                corruption=corruption,
+                severity=severity,
+                target_short_edge=target_short_edge,
+                reduce_zero_label=reduce_zero_label,
+            )
+
+            dm = SingleTaskDataModule(
+                dataset=dataset,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                shuffle=shuffle,
+                pin_memory=pin_memory,
+            )
+
+            datamodules.append(dm)
+
+    return datamodules
+
+
+def get_task_names(cfg: DictConfig) -> List[str]:
+    """Get list of task names.
+
+    Args:
+        cfg: Data configuration
+
+    Returns:
+        List of task names
+    """
+    names = []
+    for corruption in cfg.corruptions:
+        for severity in cfg.severity_levels:
+            names.append(f"{corruption}_s{severity}")
+    return names

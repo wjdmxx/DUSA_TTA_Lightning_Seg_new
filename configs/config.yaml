@@ -1,15 +1,37 @@
+# Main configuration file for TTA Segmentation
+# Uses Hydra for configuration management
+
 defaults:
-  - model/combined
-  - data/ade20k_c
-  - trainer/default
+  - model: combined
+  - data: ade20k_c
+  - trainer: default
   - _self_
 
-logging:
-  experiment_name: tta_sd3_segformer
-  project: tta
-  enable_wandb: true
+# Experiment settings
+experiment:
+  name: "tta_segmentation"
+  seed: 42
 
+# Logging settings
+logging:
+  wandb:
+    project: "tta-segmentation"
+    entity: null  # Set your wandb entity here
+    name: ${experiment.name}
+    tags: ["tta", "segmentation", "sd3"]
+  log_dir: "logs/${experiment.name}"
+
+# TTA settings
+tta:
+  # forward_mode: "tta" for normal TTA, "discriminative_only" for baseline without generative model
+  forward_mode: "tta"  # Options: "tta", "discriminative_only"
+  num_epochs: 1  # Number of TTA epochs per task
+  continual: false  # Whether to continue from previous task without reset
+
+# Hydra configuration
 hydra:
   run:
-    dir: .
-  output_subdir: null
+    dir: outputs/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: outputs/${experiment.name}/multirun/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}

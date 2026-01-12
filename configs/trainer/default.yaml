@@ -1,9 +1,29 @@
-trainer:
-  accelerator: gpu
-  devices: 1  # model-parallel inside a single process; use CUDA_VISIBLE_DEVICES=0,1
-  precision: bf16-mixed
-  max_epochs: 1
-  log_every_n_steps: 1
-  enable_checkpointing: false
-  gradient_clip_val: 1.0
-  lr: 1.0e-4
+# PyTorch Lightning Trainer configuration
+
+# Accelerator and device settings
+accelerator: "gpu"
+devices: [0, 1]  # Use both GPUs for model parallelism (not data parallelism)
+strategy: "auto"  # Don't use DDP, we handle model parallelism manually
+
+# Precision settings
+precision: "bf16-mixed"
+
+# Training settings (used as TTA epochs per task)
+max_epochs: 1
+check_val_every_n_epoch: 1
+
+# Gradient settings
+gradient_clip_val: 1.0
+accumulate_grad_batches: 1
+
+# Logging settings
+log_every_n_steps: 10
+enable_progress_bar: true
+enable_model_summary: true
+
+# Checkpointing (disabled for TTA, we reset between tasks)
+enable_checkpointing: false
+
+# Determinism
+deterministic: false
+benchmark: true

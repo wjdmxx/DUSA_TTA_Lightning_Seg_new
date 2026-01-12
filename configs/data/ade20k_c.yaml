@@ -1,12 +1,44 @@
-data:
-  data_root: /mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data
-  corruption: clean
-  corruptions: [clean]
-  severity: 1
-  severities: [1]
-  split: val
-  short_edge: 512
-  batch_size: 1
-  num_workers: 4
-  num_classes: 150
-  ignore_index: 255
+# ADE20K-C (corrupted) dataset configuration
+
+dataset_name: "ade20k_c"
+
+# Data paths
+data_root: "data/ade20k_c"
+img_dir: "images/validation"
+ann_dir: "annotations/validation"
+
+# Corruption types for TTA evaluation
+corruptions:
+  - "gaussian_noise"
+  - "shot_noise"
+  - "impulse_noise"
+  - "defocus_blur"
+  - "glass_blur"
+  - "motion_blur"
+  - "zoom_blur"
+  - "snow"
+  - "frost"
+  - "fog"
+  - "brightness"
+  - "contrast"
+  - "elastic_transform"
+  - "pixelate"
+  - "jpeg_compression"
+
+# Severity levels (1-5)
+severity_levels: [5]  # Default to highest severity
+
+# Dataset settings
+num_classes: 150
+ignore_index: 255
+reduce_zero_label: true
+
+# DataLoader settings
+batch_size: 1  # Must be 1 to avoid memory issues
+num_workers: 4
+shuffle: true
+pin_memory: true
+
+# Image preprocessing (initial resize)
+preprocessing:
+  target_short_edge: 512  # Resize short edge to 512

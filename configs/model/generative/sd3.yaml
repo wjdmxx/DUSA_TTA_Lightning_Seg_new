@@ -1,0 +1,35 @@
+# Stable Diffusion 3 generative model configuration
+
+model_path: "stabilityai/stable-diffusion-3-medium-diffusers"
+
+# Prompt template for class conditioning
+prompt_template: "a photo of a {}"
+
+# Class names to use (matches discriminative model)
+class_names: "ADE_CATEGORIES"
+
+# Timestep sampling range for diffusion
+timestep_range: [0.0, 1.0]
+
+# Device placement for model parallelism
+# VAE and text encoders on cuda:0, transformer split across cuda:0 and cuda:1
+devices:
+  vae: "cuda:0"
+  text_encoders: "cuda:0"
+  # Transformer blocks will be split: first half on cuda:0, second half on cuda:1
+  transformer_input_device: "cuda:0"
+  transformer_output_device: "cuda:0"
+
+# Preprocessing for SD3 (normalize to [-1, 1])
+preprocessing:
+  normalize: true  # Map [0, 255] to [-1, 1]
+
+# Sliding window settings
+sliding_window:
+  window_size: 512  # Must match short edge of input
+  # Stride will be computed dynamically based on image dimensions
+  # For vertical images: slide vertically
+  # For horizontal images: slide horizontally
+
+# Precision settings
+precision: "bf16"  # Use bfloat16 for mixed precision

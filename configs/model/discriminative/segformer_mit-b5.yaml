@@ -1,0 +1,19 @@
+# Segformer MIT-B5 discriminative model configuration
+
+model_name: "nvidia/segformer-b5-finetuned-ade-640-640"
+
+# Device placement (for model parallelism)
+device: "cuda:0"
+
+# Number of classes (ADE20K has 150 classes)
+num_classes: 150
+
+# Input preprocessing
+preprocessing:
+  # The processor handles normalization internally
+  # Images will be resized so short edge = 512
+  target_short_edge: 512
+
+# Output settings
+# Segformer outputs at 1/4 resolution by default
+output_stride: 4
