@@ -1,6 +1,5 @@
 """Combined model that integrates discriminative and generative models."""
 
-import copy
 import logging
 from typing import Any, Dict, Optional, Tuple
 
@@ -72,16 +71,16 @@ class CombinedModel(nn.Module):
             self.generative.setup(device)
 
         # Store initial states for reset
-        self._initial_disc_state = copy.deepcopy(
-            self.discriminative.state_dict()
-        )
+        # Use clone().detach().cpu() instead of deepcopy to handle dispatched models
+        self._initial_disc_state = {
+            name: param.clone().detach().cpu()
+            for name, param in self.discriminative.state_dict().items()
+        }
         if self.generative is not None:
-            self._initial_gen_state = copy.deepcopy(
-                {
-                    name: param.clone()
-                    for name, param in self.generative.transformer.named_parameters()
-                }
-            )
+            self._initial_gen_state = {
+                name: param.clone().detach().cpu()
+                for name, param in self.generative.transformer.named_parameters()
+            }
 
         logger.info("Combined model setup complete")
 
@@ -138,13 +137,20 @@ class CombinedModel(nn.Module):
     def reset(self) -> None:
         """Reset model to initial state."""
         if self._initial_disc_state is not None:
-            self.discriminative.load_state_dict(self._initial_disc_state)
+            # Move saved state to the same device as current model
+            current_device = next(self.discriminative.parameters()).device
+            state_dict = {
+                name: param.to(current_device)
+                for name, param in self._initial_disc_state.items()
+            }
+            self.discriminative.load_state_dict(state_dict)
             logger.info("Discriminative model reset to initial state")
 
         if self.generative is not None and self._initial_gen_state is not None:
             for name, param in self.generative.transformer.named_parameters():
                 if name in self._initial_gen_state:
-                    param.data.copy_(self._initial_gen_state[name])
+                    # Copy to the same device as the parameter
+                    param.data.copy_(self._initial_gen_state[name].to(param.device))
             logger.info("Generative model reset to initial state")
 
     def train(self, mode: bool = True):
