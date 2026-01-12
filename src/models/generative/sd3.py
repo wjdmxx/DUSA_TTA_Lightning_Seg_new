@@ -19,7 +19,7 @@ from diffusers import (
     FlowMatchEulerDiscreteScheduler,
 )
 
-from ..utils.categories import ADE_CATEGORIES
+from ...utils.categories import ADE_CATEGORIES
 
 
 @dataclass
