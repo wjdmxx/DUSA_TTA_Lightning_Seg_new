@@ -1,24 +1,12 @@
-# Core
-torch>=2.0.0
-lightning>=2.0.0
-torchmetrics>=1.0.0
-
-# Configuration
-hydra-core>=1.3.0
-omegaconf>=2.3.0
-
-# Models
-transformers>=4.30.0
-diffusers>=0.25.0
-accelerate>=0.25.0
-
-# Logging
-wandb>=0.15.0
-
-# Data
-Pillow>=9.0.0
-numpy>=1.24.0
-
-# Progress
-tqdm>=4.65.0
-rich>=13.0.0
+torch
+pytorch-lightning
+transformers
+diffusers
+accelerate
+einops
+hydra-core
+omegaconf
+torchmetrics
+pillow
+torchvision
+numpy

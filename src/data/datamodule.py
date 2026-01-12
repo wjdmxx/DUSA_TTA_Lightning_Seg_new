@@ -1,123 +1,105 @@
-"""
-Lightning DataModule for TTA.
-Manages data loading for multiple corruption tasks.
-"""
+import os
+from pathlib import Path
+from typing import Optional, Tuple
 
-from typing import Dict, List, Optional, Any
-from torch.utils.data import DataLoader
-import lightning.pytorch as pl
+import numpy as np
+import pytorch_lightning as pl
+import torch
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+import torchvision.transforms.functional as TF
 
-from .ade20k_c import ADE20KCorruptedDataset, CORRUPTION_TYPES, DEFAULT_SEVERITY
-from .transforms import TTATransform
 
-
-class TTADataModule(pl.LightningDataModule):
-    """
-    Lightning DataModule for TTA evaluation.
-    
-    Manages multiple corruption tasks and provides dataloaders for each.
-    """
-    
+class ADE20KCorruptionDataset(Dataset):
     def __init__(
         self,
         data_root: str,
-        corruption_types: Optional[List[str]] = None,
-        severity: int = DEFAULT_SEVERITY,
-        target_short_side: int = 512,
+        corruption: str,
+        severity: int,
+        split: str = "val",
+        short_edge: int = 512,
+    ) -> None:
+        super().__init__()
+        self.data_root = Path(data_root)
+        self.corruption = corruption
+        self.severity = severity
+        self.split = split
+        self.short_edge = short_edge
+        self.image_dir = self.data_root / "ADE20K_val-c" / corruption / str(severity) / split
+        self.annotation_dir = self.data_root / "annotations" / split
+        self.image_paths = sorted([p for p in self.image_dir.glob("*.*") if p.is_file()])
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def _resize_pair(self, image: Image.Image, mask: Image.Image) -> Tuple[Image.Image, Image.Image]:
+        w, h = image.size
+        short = min(h, w)
+        scale = self.short_edge / short
+        new_h, new_w = int(round(h * scale)), int(round(w * scale))
+        image = image.resize((new_w, new_h), resample=Image.BILINEAR)
+        mask = mask.resize((new_w, new_h), resample=Image.NEAREST)
+        return image, mask
+
+    def __getitem__(self, idx):
+        image_path = self.image_paths[idx]
+        mask_path = self.annotation_dir / image_path.name
+        image = Image.open(image_path).convert("RGB")
+        mask = Image.open(mask_path)
+        image, mask = self._resize_pair(image, mask)
+        image_tensor = TF.to_tensor(image)
+        mask_tensor = torch.from_numpy(np.array(mask, dtype=np.int64))
+        return {"image": image_tensor, "mask": mask_tensor}
+
+
+class ADE20KCorruptionDataModule(pl.LightningDataModule):
+    def __init__(
+        self,
+        data_root: str,
+        corruption: str,
+        severity: int,
+        split: str = "val",
+        short_edge: int = 512,
         batch_size: int = 1,
         num_workers: int = 4,
-        pin_memory: bool = True,
-    ):
-        """
-        Args:
-            data_root: Root directory containing dataset
-            corruption_types: List of corruption types to evaluate
-            severity: Corruption severity level (1-5)
-            target_short_side: Target short side for image resizing
-            batch_size: Batch size (default 1 for TTA)
-            num_workers: Number of data loading workers
-            pin_memory: Whether to pin memory for faster GPU transfer
-        """
+        shuffle: bool = True,
+    ) -> None:
         super().__init__()
-        
         self.data_root = data_root
-        self.corruption_types = corruption_types or CORRUPTION_TYPES
+        self.corruption = corruption
         self.severity = severity
-        self.target_short_side = target_short_side
+        self.split = split
+        self.short_edge = short_edge
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.pin_memory = pin_memory
-        
-        # Transform
-        self.transform = TTATransform(target_short_side=target_short_side)
-        
-        # Current task
-        self._current_corruption = None
-        self._current_dataset = None
-    
+        self.shuffle = shuffle
+        self.dataset: Optional[ADE20KCorruptionDataset] = None
+
     def setup(self, stage: Optional[str] = None) -> None:
-        """Setup is handled per-task in get_test_dataloader."""
-        pass
-    
-    def get_test_dataloader(self, corruption_type: str) -> DataLoader:
-        """
-        Get DataLoader for a specific corruption task.
-        
-        Args:
-            corruption_type: Type of corruption
-            
-        Returns:
-            DataLoader for the specified corruption
-        """
-        dataset = ADE20KCorruptedDataset(
+        self.dataset = ADE20KCorruptionDataset(
             data_root=self.data_root,
-            corruption_type=corruption_type,
+            corruption=self.corruption,
             severity=self.severity,
-            transform=self.transform,
+            split=self.split,
+            short_edge=self.short_edge,
         )
-        
+
+    def train_dataloader(self):
+        assert self.dataset is not None
         return DataLoader(
-            dataset,
+            self.dataset,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def val_dataloader(self):
+        assert self.dataset is not None
+        return DataLoader(
+            self.dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            drop_last=False,
+            pin_memory=True,
         )
-    
-    def get_all_corruption_types(self) -> List[str]:
-        """Get list of all corruption types to evaluate."""
-        return self.corruption_types.copy()
-    
-    def test_dataloader(self) -> DataLoader:
-        """
-        Required by Lightning but not used directly.
-        Use get_test_dataloader(corruption_type) instead.
-        """
-        if self._current_corruption is None:
-            self._current_corruption = self.corruption_types[0]
-        return self.get_test_dataloader(self._current_corruption)
-    
-    def set_current_corruption(self, corruption_type: str) -> None:
-        """Set the current corruption type for test_dataloader()."""
-        self._current_corruption = corruption_type
-
-
-def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Custom collate function for TTA.
-    
-    Args:
-        batch: List of sample dicts
-        
-    Returns:
-        Batched dict
-    """
-    import torch
-    
-    return {
-        "image": torch.stack([item["image"] for item in batch]),
-        "label": torch.stack([item["label"] for item in batch]),
-        "original_size": [item["original_size"] for item in batch],
-        "img_path": [item["img_path"] for item in batch],
-    }

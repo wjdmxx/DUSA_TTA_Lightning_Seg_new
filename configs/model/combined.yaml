@@ -1,17 +1,16 @@
-# Combined Model Configuration
-# Combines discriminative (SegFormer) and generative (SD3) models
-#
-# Default device layout (requires 2 GPUs):
-#   - cuda:0: Discriminative (SegFormer) + VAE
-#   - cuda:1: SD3 Transformer
-#
-# Usage: CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py
-
-defaults:
-  - discriminative: segformer_b5
-  - generative: sd3_multi_gpu  # Default to multi-GPU config
-
-# Model update settings
-update_discriminative: true
-update_generative: true
-update_norm_only: false  # If true, only update norm layers in discriminative model
+model:
+  forward_mode: joint  # options: joint, discriminative_only
+  discriminative:
+    model_name: nvidia/segformer-b5-finetuned-ade-640-640
+    num_classes: 150
+    short_edge: 512
+    device: cuda:0
+  generative:
+    model_path: stabilityai/stable-diffusion-3-medium-diffusers
+    prompt: a photo of a {}
+    window_size: 512
+    stride: 256
+    topk: 1
+    classes_threshold: 20
+    device_primary: cuda:0
+    device_secondary: cuda:1
