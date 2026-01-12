@@ -3,11 +3,14 @@
 dataset_name: "ade20k_c"
 
 # Data paths
-data_root: "data/ade20k_c"
-img_dir: "images/validation"
-ann_dir: "annotations/validation"
+# Directory structure:
+#   data_root/
+#     ADE20K_val-c/{corruption}/{severity}/validation/*.jpg
+#     annotations/validation/*.png
+data_root: "data/ade20k"
+split: "validation"
 
-# Corruption types for TTA evaluation
+# Corruption types for TTA evaluation (15 types)
 corruptions:
   - "gaussian_noise"
   - "shot_noise"
@@ -25,8 +28,8 @@ corruptions:
   - "pixelate"
   - "jpeg_compression"
 
-# Severity levels (1-5)
-severity_levels: [5]  # Default to highest severity
+# Severity levels (1-5), default to highest severity
+severity_levels: [5]
 
 # Dataset settings
 num_classes: 150

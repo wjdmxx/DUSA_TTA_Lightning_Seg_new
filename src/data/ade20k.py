@@ -19,12 +19,16 @@ class ADE20KCorruptedDataset(Dataset):
 
     Directory structure expected:
     data_root/
-        images/validation/{corruption}_{severity}/
-            ADE_val_00000001.jpg
-            ...
-        annotations/validation/
-            ADE_val_00000001.png
-            ...
+        ADE20K_val-c/
+            {corruption}/
+                {severity}/
+                    validation/
+                        ADE_val_00000001.jpg
+                        ...
+        annotations/
+            validation/
+                ADE_val_00000001.png
+                ...
     """
 
     def __init__(
@@ -32,6 +36,7 @@ class ADE20KCorruptedDataset(Dataset):
         data_root: str,
         corruption: str,
         severity: int = 5,
+        split: str = "validation",
         target_short_edge: int = 512,
         reduce_zero_label: bool = True,
         transform: Optional[Callable] = None,
@@ -42,6 +47,7 @@ class ADE20KCorruptedDataset(Dataset):
             data_root: Root directory of the dataset
             corruption: Corruption type (e.g., "gaussian_noise")
             severity: Severity level (1-5)
+            split: Data split ("validation")
             target_short_edge: Target size for short edge resize
             reduce_zero_label: Whether to reduce zero label (ADE20K specific)
             transform: Optional transform to apply
@@ -50,13 +56,16 @@ class ADE20KCorruptedDataset(Dataset):
         self.data_root = Path(data_root)
         self.corruption = corruption
         self.severity = severity
+        self.split = split
         self.target_short_edge = target_short_edge
         self.reduce_zero_label = reduce_zero_label
         self.transform = transform
 
-        # Build file lists
-        self.img_dir = self.data_root / "images" / "validation" / f"{corruption}_{severity}"
-        self.ann_dir = self.data_root / "annotations" / "validation"
+        # Build file paths
+        # Image directory: data_root / ADE20K_val-c / corruption / severity / split
+        self.img_dir = self.data_root / "ADE20K_val-c" / corruption / str(severity) / split
+        # Annotation directory: data_root / annotations / split
+        self.ann_dir = self.data_root / "annotations" / split
 
         # Get all image files
         self.img_files = sorted(list(self.img_dir.glob("*.jpg")) + list(self.img_dir.glob("*.png")))
@@ -64,10 +73,33 @@ class ADE20KCorruptedDataset(Dataset):
         if len(self.img_files) == 0:
             raise RuntimeError(f"No images found in {self.img_dir}")
 
+        # Verify annotation directory exists
+        if not self.ann_dir.exists():
+            raise RuntimeError(f"Annotation directory not found: {self.ann_dir}")
+
         print(f"Loaded {len(self.img_files)} images for {corruption} severity {severity}")
 
     def __len__(self) -> int:
         return len(self.img_files)
+
+    def _get_annotation_path(self, img_path: Path) -> Path:
+        """Get the corresponding annotation path for an image.
+
+        ADE20K annotation files have the same stem as image files but with .png extension.
+
+        Args:
+            img_path: Path to the image file
+
+        Returns:
+            Path to the corresponding annotation file
+        """
+        # Get the image filename stem (without extension)
+        img_stem = img_path.stem
+
+        # Annotation file is in ann_dir with .png extension
+        ann_path = self.ann_dir / f"{img_stem}.png"
+
+        return ann_path
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         # Load image
@@ -75,8 +107,9 @@ class ADE20KCorruptedDataset(Dataset):
         image = Image.open(img_path).convert("RGB")
 
         # Load annotation
-        ann_name = img_path.stem + ".png"
-        ann_path = self.ann_dir / ann_name
+        ann_path = self._get_annotation_path(img_path)
+        if not ann_path.exists():
+            raise FileNotFoundError(f"Annotation not found: {ann_path} for image {img_path}")
         label = Image.open(ann_path)
 
         # Convert to tensors
@@ -150,17 +183,20 @@ class ADE20KDataset(Dataset):
 
     Directory structure expected:
     data_root/
-        images/validation/
-            ADE_val_00000001.jpg
-            ...
-        annotations/validation/
-            ADE_val_00000001.png
-            ...
+        images/
+            validation/
+                ADE_val_00000001.jpg
+                ...
+        annotations/
+            validation/
+                ADE_val_00000001.png
+                ...
     """
 
     def __init__(
         self,
         data_root: str,
+        split: str = "validation",
         target_short_edge: int = 512,
         reduce_zero_label: bool = True,
         transform: Optional[Callable] = None,
@@ -169,19 +205,21 @@ class ADE20KDataset(Dataset):
 
         Args:
             data_root: Root directory of the dataset
+            split: Data split ("validation" or "training")
             target_short_edge: Target size for short edge resize
             reduce_zero_label: Whether to reduce zero label (ADE20K specific)
             transform: Optional transform to apply
         """
         super().__init__()
         self.data_root = Path(data_root)
+        self.split = split
         self.target_short_edge = target_short_edge
         self.reduce_zero_label = reduce_zero_label
         self.transform = transform
 
         # Build file lists
-        self.img_dir = self.data_root / "images" / "validation"
-        self.ann_dir = self.data_root / "annotations" / "validation"
+        self.img_dir = self.data_root / "images" / split
+        self.ann_dir = self.data_root / "annotations" / split
 
         # Get all image files
         self.img_files = sorted(list(self.img_dir.glob("*.jpg")) + list(self.img_dir.glob("*.png")))
@@ -189,10 +227,16 @@ class ADE20KDataset(Dataset):
         if len(self.img_files) == 0:
             raise RuntimeError(f"No images found in {self.img_dir}")
 
-        print(f"Loaded {len(self.img_files)} images from ADE20K validation set")
+        print(f"Loaded {len(self.img_files)} images from ADE20K {split} set")
 
     def __len__(self) -> int:
         return len(self.img_files)
+
+    def _get_annotation_path(self, img_path: Path) -> Path:
+        """Get the corresponding annotation path for an image."""
+        img_stem = img_path.stem
+        ann_path = self.ann_dir / f"{img_stem}.png"
+        return ann_path
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         # Load image
@@ -200,8 +244,9 @@ class ADE20KDataset(Dataset):
         image = Image.open(img_path).convert("RGB")
 
         # Load annotation
-        ann_name = img_path.stem + ".png"
-        ann_path = self.ann_dir / ann_name
+        ann_path = self._get_annotation_path(img_path)
+        if not ann_path.exists():
+            raise FileNotFoundError(f"Annotation not found: {ann_path} for image {img_path}")
         label = Image.open(ann_path)
 
         # Convert to tensors

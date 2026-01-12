@@ -191,6 +191,9 @@ def main(cfg: DictConfig):
     all_miou = []
     current_state = initial_state
 
+    # Get split from config
+    split = cfg.data.get("split", "validation")
+
     for task_idx, task_name in enumerate(task_names):
         # Create dataset for this task
         corruption = task_name.rsplit("_s", 1)[0]
@@ -200,6 +203,7 @@ def main(cfg: DictConfig):
             data_root=cfg.data.data_root,
             corruption=corruption,
             severity=severity,
+            split=split,
             target_short_edge=cfg.data.preprocessing.target_short_edge,
             reduce_zero_label=cfg.data.reduce_zero_label,
         )

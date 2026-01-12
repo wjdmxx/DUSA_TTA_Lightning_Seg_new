@@ -30,6 +30,7 @@ class TTADataModule(pl.LightningDataModule):
         super().__init__()
         self.cfg = cfg
         self.data_root = cfg.data_root
+        self.split = cfg.get("split", "validation")
         self.corruptions = list(cfg.corruptions)
         self.severity_levels = list(cfg.severity_levels)
         self.batch_size = cfg.batch_size
@@ -68,6 +69,7 @@ class TTADataModule(pl.LightningDataModule):
             data_root=self.data_root,
             corruption=task["corruption"],
             severity=task["severity"],
+            split=self.split,
             target_short_edge=self.target_short_edge,
             reduce_zero_label=self.reduce_zero_label,
         )
@@ -149,6 +151,7 @@ def create_task_datamodules(cfg: DictConfig) -> List[SingleTaskDataModule]:
         List of SingleTaskDataModule instances
     """
     data_root = cfg.data_root
+    split = cfg.get("split", "validation")
     corruptions = list(cfg.corruptions)
     severity_levels = list(cfg.severity_levels)
     batch_size = cfg.batch_size
@@ -166,6 +169,7 @@ def create_task_datamodules(cfg: DictConfig) -> List[SingleTaskDataModule]:
                 data_root=data_root,
                 corruption=corruption,
                 severity=severity,
+                split=split,
                 target_short_edge=target_short_edge,
                 reduce_zero_label=reduce_zero_label,
             )
