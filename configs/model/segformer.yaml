@@ -1,0 +1,4 @@
+name: "segformer"
+pretrained_model_name_or_path: "nvidia/segformer-b5-finetuned-ade-640-640"
+num_labels: 150 # ADE20K classes
+ignore_index: 255

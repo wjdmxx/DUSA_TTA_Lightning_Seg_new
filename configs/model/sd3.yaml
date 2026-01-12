@@ -1,0 +1,7 @@
+name: "sd3"
+pretrained_model_name_or_path: "stabilityai/stable-diffusion-3-medium-diffusers"
+prompt: "a photo of a scene" # Default generic prompt, or specific if needed
+guidance_scale: 7.0
+num_inference_steps: 20 # For TTA we might use just 1 step for loss, or few
+dispatch_usage: true # Whether to use accelerate dispatch
+max_memory: {0: "16GB", 1: "16GB"} # Example memory map, adjust as needed or make dynamic

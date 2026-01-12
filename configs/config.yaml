@@ -1,40 +1,33 @@
-# Main configuration file for TTA experiments
-# Usage: python scripts/run_tta.py
-# Override values: python scripts/run_tta.py tta.forward_mode=discriminative_only
-
 defaults:
-  - model: combined
-  - data: ade20k_c
-  - trainer: default
   - _self_
+  - model: segformer
+  - dataset: ade20k_c
+  - experiment: base
 
-# Experiment identification
-experiment_name: "first_try"
+project_name: "tta_segmentation"
+experiment_name: "default_experiment"
 seed: 42
+output_dir: "outputs/${experiment_name}/${now:%Y-%m-%d_%H-%M-%S}"
 
-# TTA settings
+# TTA Settings
 tta:
-  # Whether to reset model between tasks (continual=false means reset)
-  continual: false
-  
-  # Forward mode: "tta" for full TTA, "discriminative_only" for baseline
-  forward_mode: "discriminative_only"
-  
-  # Number of epochs per task
-  max_epochs: 1
-  
-  # Optimizer settings
-  learning_rate: 1e-05
-  weight_decay: 0.0
-  optimizer_type: "adamw"
-  betas: [0.9, 0.999]
-  
-  # Which components to update
-  update_discriminative: true
-  update_generative: true
+  enabled: true
+  lr: 1e-5
+  steps: 1
+  optimizer: "AdamW"
+  forward_mode: "tta" # or "source_only"
+  sliding_window_size: 512
+  reset_model_per_task: true
 
-# Logging configuration
-logging:
-  wandb:
-    project: "dusa-seg-tta"
-    entity: null  # Set to your W&B username/org if needed
+# Logging
+wandb:
+  enabled: true
+  project: "tta_segmentation"
+  entity: null # Set your entity if needed
+  name: "${experiment_name}"
+
+# System
+device: "cuda"
+num_gpus: 2 # Default for dispatching
+gradient_checkpointing: true
+precision: "bf16" # mixed precision

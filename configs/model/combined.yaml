@@ -1,4 +1,0 @@
-# Combined model configuration
-defaults:
-  - discriminative: segformer_b5
-  - generative: sd3
