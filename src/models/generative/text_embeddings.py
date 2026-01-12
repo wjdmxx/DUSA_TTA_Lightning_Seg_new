@@ -126,7 +126,7 @@ class TextEmbeddingManager:
             for class_name in tqdm(self.class_names, desc="Computing embeddings"):
                 # Format prompt
                 prompt = self.prompt_template.format(class_name.replace("_", " "))
-
+                
                 # Encode prompt using SD3 pipeline
                 with torch.no_grad():
                     (

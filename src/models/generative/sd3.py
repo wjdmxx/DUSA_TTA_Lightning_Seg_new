@@ -272,7 +272,6 @@ class SD3GenerativeModel(nn.Module):
         """
         B = images.shape[0]
         device = images.device
-
         # Apply sliding window
         image_windows, logit_windows, num_windows = self.sliding_window.slide_batch(
             images, logits, logits_scale=4
