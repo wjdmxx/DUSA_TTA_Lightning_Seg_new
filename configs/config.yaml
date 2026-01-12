@@ -18,7 +18,7 @@ tta:
   continual: false
   
   # Forward mode: "tta" for full TTA, "discriminative_only" for baseline
-  forward_mode: "tta"
+  forward_mode: "discriminative_only"
   
   # Number of epochs per task
   max_epochs: 1

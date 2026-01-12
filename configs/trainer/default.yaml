@@ -2,7 +2,7 @@
 # Uses FSDP strategy for dual-GPU model parallelism
 
 # Number of GPUs to use
-devices: 2
+devices: -1
 
 # FSDP strategy for model parallelism across 2 GPUs
 # Usage: CUDA_VISIBLE_DEVICES=0,1 python scripts/run_tta.py
