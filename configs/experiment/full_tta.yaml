@@ -1,0 +1,12 @@
+# Full TTA Experiment Configuration
+# Run complete TTA with both discriminative and generative models
+
+# @package _global_
+
+experiment:
+  name: full_tta
+  description: "SD3-assisted TTA for semantic segmentation"
+
+tta:
+  forward_mode: tta
+  update_generative: true

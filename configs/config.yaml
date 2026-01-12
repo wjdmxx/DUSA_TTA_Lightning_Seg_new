@@ -1,33 +1,31 @@
+# SD3-TTA Main Configuration
+# Use: python -m src.main
+
 defaults:
+  - model/discriminative: segformer_b5
+  - model/generative: sd3
+  - data: ade20k_c
+  - tta: default
+  - logging: wandb
   - _self_
-  - model: segformer
-  - dataset: ade20k_c
-  - experiment: base
 
-project_name: "tta_segmentation"
-experiment_name: "default_experiment"
-seed: 42
-output_dir: "outputs/${experiment_name}/${now:%Y-%m-%d_%H-%M-%S}"
+# Experiment identification
+experiment:
+  name: sd3_tta
+  id: 1  # Change this for different runs to avoid overwriting W&B runs
 
-# TTA Settings
-tta:
-  enabled: true
-  lr: 1e-5
-  steps: 1
-  optimizer: "AdamW"
-  forward_mode: "tta" # or "source_only"
-  sliding_window_size: 512
-  reset_model_per_task: true
+# Device configuration
+device:
+  precision: bf16  # bf16 | fp16 | fp32
+  # num_gpus is auto-detected from CUDA_VISIBLE_DEVICES
 
-# Logging
-wandb:
-  enabled: true
-  project: "tta_segmentation"
-  entity: null # Set your entity if needed
-  name: "${experiment_name}"
+# Output directory (Hydra default)
+output_dir: ./outputs/${experiment.name}_${experiment.id}
 
-# System
-device: "cuda"
-num_gpus: 2 # Default for dispatching
-gradient_checkpointing: true
-precision: "bf16" # mixed precision
+# Hydra configuration
+hydra:
+  run:
+    dir: ${output_dir}
+  sweep:
+    dir: ${output_dir}
+    subdir: ${hydra.job.num}

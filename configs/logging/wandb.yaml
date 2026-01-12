@@ -1,0 +1,22 @@
+# Weights & Biases Logging Configuration
+
+wandb:
+  # Enable/disable W&B logging
+  enabled: true
+
+  # Project name on W&B
+  project: sd3-tta-seg
+
+  # Entity (team/username) - null uses default
+  entity: null
+
+  # Logging interval (steps)
+  log_interval: 10
+
+  # Whether to log images
+  log_images: false
+
+# Local logging
+local:
+  save_dir: ./logs
+  level: INFO

@@ -1,8 +1,0 @@
-name: "ade20k_c"
-data_root: "data" # Adjust to actual path if known or environment variable
-corruption: "gaussian_noise" # default
-severity: 5
-short_edge_size: 512
-batch_size: 1
-num_workers: 4
-shuffle: true

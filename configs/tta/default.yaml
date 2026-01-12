@@ -1,0 +1,30 @@
+# TTA Configuration
+
+# Forward mode
+# - "tta": Full TTA with generative model
+# - "discriminative_only": Only run discriminative model (baseline)
+forward_mode: tta
+
+# Continual mode
+# - true: Don't reset model between corruptions (continual adaptation)
+# - false: Reset model before each corruption (independent adaptation)
+continual: false
+
+# Batch size (1 recommended for TTA)
+batch_size: 1
+
+# Whether to update generative model
+update_generative: true
+
+# Optimizer configuration
+optimizer:
+  type: AdamW
+  lr: 0.00006
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+# DataLoader configuration
+dataloader:
+  num_workers: 4
+  shuffle: true
+  pin_memory: true

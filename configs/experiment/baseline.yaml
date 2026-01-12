@@ -1,0 +1,11 @@
+# Baseline Experiment Configuration
+# Run only discriminative model without TTA (for comparison)
+
+# @package _global_
+
+experiment:
+  name: baseline
+  description: "Discriminative model only - no TTA adaptation"
+
+tta:
+  forward_mode: discriminative_only

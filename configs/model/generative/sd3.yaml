@@ -1,0 +1,42 @@
+# SD3 Generative Model Configuration
+# Stable Diffusion 3 for TTA
+
+# Model path
+model_path: stabilityai/stable-diffusion-3-medium-diffusers
+
+# VAE configuration
+vae:
+  device: cuda:0
+
+# Transformer configuration (dispatched across GPUs)
+transformer:
+  # Device mapping: "balanced" | "auto" | explicit dict
+  # "balanced" automatically distributes across available GPUs
+  device_map: balanced
+  input_device: cuda:0
+  output_device: cuda:0
+  # Enable gradient checkpointing to save memory
+  gradient_checkpointing: true
+
+# Preprocessing
+preprocess:
+  normalize_range: [-1, 1]
+
+# Sliding window configuration
+sliding_window:
+  size: 512      # Window size (matches short edge)
+  stride: 171    # Stride between windows
+
+# Loss configuration
+loss:
+  topk: 1                    # Number of top classes per pixel
+  classes_threshold: 20      # Max unique classes
+  temperature: 1.0           # Softmax temperature
+
+# Timestep sampling range for flow matching
+timestep_range: [0.25, 0.25]
+
+# Text embedding configuration
+text_embedding:
+  prompt_template: "a photo of a {}"
+  cache_dir: ./embeddings_cache

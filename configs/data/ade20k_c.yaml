@@ -1,0 +1,33 @@
+# ADE20K-C Dataset Configuration
+
+# Data root directory
+root: ./data
+
+# Dataset info
+dataset: ADE20K-C
+num_classes: 150
+
+# Corruption types to evaluate
+corruptions:
+  - gaussian_noise
+  - shot_noise
+  - impulse_noise
+  - defocus_blur
+  - glass_blur
+  - motion_blur
+  - zoom_blur
+  - snow
+  - frost
+  - fog
+  - brightness
+  - contrast
+  - elastic_transform
+  - pixelate
+  - jpeg_compression
+
+# Corruption severity (1-5, 5 is most severe)
+severity: 5
+
+# Image preprocessing
+preprocess:
+  short_edge_size: 512  # Scale short edge to this size
