@@ -52,7 +52,9 @@ class SD3GenerativeModel(nn.Module):
         self.vae_device = torch.device(cfg.devices.vae)
         self.text_encoder_device = torch.device(cfg.devices.text_encoders)
         self.transformer_input_device = torch.device(cfg.devices.transformer_input_device)
-        self.transformer_output_device = torch.device(cfg.devices.transformer_output_device)
+        # Output device: transformer outputs on cuda:1 (where norm_out/proj_out are),
+        # but we move it back to vae_device for loss computation
+        self.loss_compute_device = self.vae_device
 
         # Load pipeline
         print(f"Loading SD3 Pipeline from {cfg.model_path}...")
@@ -129,7 +131,7 @@ class SD3GenerativeModel(nn.Module):
         })
 
         # Dispatch transformer
-        print(f"Dispatching transformer with device_map...")
+        print(f"Dispatching transformer with device_map: first {split} blocks on cuda:0, rest on cuda:1")
         self.transformer = dispatch_model(
             self.transformer,
             device_map=device_map,
@@ -166,7 +168,7 @@ class SD3GenerativeModel(nn.Module):
             images: Preprocessed tensor with values in [-1, 1]
 
         Returns:
-            Latent tensor
+            Latent tensor (detached, no gradient needed for latent itself)
         """
         images = images.to(self.vae_device, dtype=torch.bfloat16)
         with torch.no_grad():
@@ -178,19 +180,18 @@ class SD3GenerativeModel(nn.Module):
         self,
         tensor: torch.Tensor,
         window_size: int
-    ) -> Tuple[torch.Tensor, List[Tuple[int, int]], str]:
+    ) -> Tuple[List[torch.Tensor], List[Tuple[int, int]], str]:
         """Create sliding windows along the long edge of the tensor.
 
-        This uses tensor operations instead of for loops for efficiency.
         The window slides along the long edge (height for vertical images,
-        width for horizontal images).
+        width for horizontal images). Short edge should equal window_size.
 
         Args:
             tensor: Input tensor of shape (B, C, H, W)
-            window_size: Size of the square window
+            window_size: Size of the square window (should match short edge)
 
         Returns:
-            windows: Tensor of shape (B, num_windows, C, window_size, window_size)
+            windows: List of tensors, each of shape (B, C, window_size, window_size)
             positions: List of (start_h, start_w) positions for each window
             slide_direction: "vertical" or "horizontal"
         """
@@ -198,66 +199,62 @@ class SD3GenerativeModel(nn.Module):
 
         # Determine slide direction based on which edge is longer
         if h > w:
-            # Vertical image: slide vertically
+            # Vertical image (h > w): slide vertically, w is short edge
             slide_direction = "vertical"
             slide_dim = h
             fixed_dim = w
         else:
-            # Horizontal image: slide horizontally
+            # Horizontal image (w >= h): slide horizontally, h is short edge
             slide_direction = "horizontal"
             slide_dim = w
             fixed_dim = h
 
         # Calculate number of windows and positions
-        # Windows should cover the entire long edge with minimal overlap
         if slide_dim <= window_size:
             num_windows = 1
             positions = [(0, 0)]
         else:
-            # Calculate stride to cover the full length
-            # We want at least 2 windows with some overlap
-            num_windows = max(2, (slide_dim - 1) // (window_size // 2))
-            stride = (slide_dim - window_size) / (num_windows - 1) if num_windows > 1 else 0
+            # Calculate stride to cover the full length with some overlap
+            # Ensure we cover the entire image
+            num_windows = max(2, (slide_dim + window_size - 1) // window_size)
+            if num_windows > 1:
+                stride = (slide_dim - window_size) // (num_windows - 1)
+            else:
+                stride = 0
 
             positions = []
             for i in range(num_windows):
-                pos = int(i * stride)
+                pos = i * stride
                 pos = min(pos, slide_dim - window_size)  # Ensure we don't go out of bounds
                 if slide_direction == "vertical":
                     positions.append((pos, 0))
                 else:
                     positions.append((0, pos))
 
+            # Remove duplicate positions
+            positions = list(dict.fromkeys(positions))
+
         # Extract windows
         windows_list = []
         for start_h, start_w in positions:
-            end_h = start_h + window_size
-            end_w = start_w + window_size
-
-            # Handle case where window exceeds tensor size
             if slide_direction == "vertical":
-                end_h = min(end_h, h)
-                start_h = max(0, end_h - window_size)
+                end_h = start_h + window_size
                 window = tensor[:, :, start_h:end_h, :]
-                # Pad width if needed
+                # Pad width if needed (when w < window_size)
                 if w < window_size:
                     pad_w = window_size - w
                     window = F.pad(window, (0, pad_w, 0, 0), mode='reflect')
             else:
-                end_w = min(end_w, w)
-                start_w = max(0, end_w - window_size)
+                end_w = start_w + window_size
                 window = tensor[:, :, :, start_w:end_w]
-                # Pad height if needed
+                # Pad height if needed (when h < window_size)
                 if h < window_size:
                     pad_h = window_size - h
                     window = F.pad(window, (0, 0, 0, pad_h), mode='reflect')
 
             windows_list.append(window)
 
-        # Stack windows: (B, num_windows, C, window_size, window_size)
-        windows = torch.stack(windows_list, dim=1)
-
-        return windows, positions, slide_direction
+        return windows_list, positions, slide_direction
 
     def sample_timestep(self, batch_size: int, device: torch.device) -> torch.Tensor:
         """Sample random timesteps for flow matching.
@@ -270,7 +267,7 @@ class SD3GenerativeModel(nn.Module):
             Timesteps tensor of shape (batch_size,)
         """
         left, right = self.timestep_range
-        return torch.rand(batch_size, device=device) * (right - left) + left
+        return torch.rand(batch_size, device=device, dtype=torch.float32) * (right - left) + left
 
     def select_topk_classes(
         self,
@@ -286,14 +283,15 @@ class SD3GenerativeModel(nn.Module):
             topk_probs: Softmax probabilities for selected classes (B, K, H, W)
             mask_metric: Mask for valid positions (B, 1, H, W)
         """
-        b, k, h, w = logits.shape
+        b, num_cls, h, w = logits.shape
         device = logits.device
+        dtype = logits.dtype
 
         # Get top-k indices per pixel
-        topk_logits, topk_idx = torch.topk(logits, self.topk, dim=1)
+        _, topk_idx = torch.topk(logits, self.topk, dim=1)
 
         # Get unique classes across all pixels
-        mask_metric = torch.ones(b, 1, h, w, device=device)
+        mask_metric = torch.ones(b, 1, h, w, device=device, dtype=dtype)
         topk_idx_unique = topk_idx.unique()
 
         # Threshold: limit number of classes
@@ -306,7 +304,7 @@ class SD3GenerativeModel(nn.Module):
                 perm = torch.randperm(top1_idx_unique.shape[0], device=device)
                 topk_idx_unique = top1_idx_unique[perm[:self.classes_threshold]]
                 # Mask out positions not in selected classes
-                mask_metric = mask_metric * torch.isin(top1_idx, topk_idx_unique).float()
+                mask_metric = torch.isin(top1_idx, topk_idx_unique).float().to(dtype)
             else:
                 # Keep all top1, randomly select rest from other topk
                 other_idx = topk_idx_unique[~torch.isin(topk_idx_unique, top1_idx_unique)]
@@ -319,7 +317,6 @@ class SD3GenerativeModel(nn.Module):
                     topk_idx_unique = top1_idx_unique
 
         # Compute probabilities for selected classes
-        # Expand topk_idx_unique to match logits shape for gathering
         k_selected = topk_idx_unique.shape[0]
         idx_expanded = topk_idx_unique.view(1, k_selected, 1, 1).expand(b, k_selected, h, w)
         selected_logits = torch.gather(logits, 1, idx_expanded)
@@ -339,7 +336,7 @@ class SD3GenerativeModel(nn.Module):
             logits: Segmentation logits of shape (B, num_classes, H/4, W/4)
 
         Returns:
-            Total loss (scalar tensor)
+            Total loss (scalar tensor with gradient)
         """
         # Preprocess images for VAE
         processed_images = self.preprocess(images)
@@ -355,22 +352,27 @@ class SD3GenerativeModel(nn.Module):
             logits.to(self.vae_device), logit_window_size
         )
 
-        b, num_windows, c_img, h_win, w_win = image_windows.shape
-        _, _, c_logit, h_logit, w_logit = logit_windows.shape
+        num_windows = len(image_windows)
 
-        total_loss = torch.tensor(0.0, device=self.vae_device, dtype=torch.float32)
+        # Accumulate loss
+        total_loss = None
 
         # Process each window
         for win_idx in range(num_windows):
+            torch.cuda.empty_cache()
+
             # Get current window
-            img_window = image_windows[:, win_idx]  # (B, C, H, W)
-            logit_window = logit_windows[:, win_idx]  # (B, num_classes, H/4, W/4)
+            img_window = image_windows[win_idx]  # (B, C, H, W)
+            logit_window = logit_windows[win_idx]  # (B, num_classes, H/4, W/4)
 
             # Compute loss for this window
             window_loss = self._compute_window_loss(img_window, logit_window)
 
-            # Accumulate loss
-            total_loss = total_loss + window_loss / num_windows
+            # Accumulate loss (keep gradient)
+            if total_loss is None:
+                total_loss = window_loss / num_windows
+            else:
+                total_loss = total_loss + window_loss / num_windows
 
         return total_loss
 
@@ -386,85 +388,92 @@ class SD3GenerativeModel(nn.Module):
             logits: Window logits of shape (B, num_classes, window_size/4, window_size/4)
 
         Returns:
-            Loss for this window (scalar tensor)
+            Loss for this window (scalar tensor with gradient)
         """
         bsz = images.shape[0]
+        device = self.loss_compute_device
 
-        # Encode to latent
-        latent = self.encode_to_latent(images)
+        # Encode to latent (no gradient needed for latent itself)
+        latent = self.encode_to_latent(images)  # (B, 16, H/8, W/8) for SD3
 
         # Sample timestep
-        timesteps = self.sample_timestep(bsz, latent.device)
+        timesteps = self.sample_timestep(bsz, device)
 
         # Sample noise
         noise = torch.randn_like(latent)
 
-        # Resize logits to match latent size (should be same, but ensure)
+        # Resize logits to match latent spatial size
         resized_logits = F.interpolate(
-            logits,
+            logits.to(device),
             size=latent.shape[2:],
             mode='bilinear',
             align_corners=True
         )
 
-        # Select top-k classes
+        # Select top-k classes (maintains gradient through logits -> topk_probs)
         topk_idx_unique, topk_probs, mask_metric = self.select_topk_classes(resized_logits)
 
+        num_classes = topk_idx_unique.shape[0]
+
         # Get class embeddings for selected classes
-        cond = self.class_embeddings.to(latent.device)
+        cond = self.class_embeddings.to(device)
         cond = torch.index_select(cond, 0, topk_idx_unique)
 
-        pooled_cond = self.pooled_embeddings.to(latent.device)
+        pooled_cond = self.pooled_embeddings.to(device)
         pooled_cond = torch.index_select(pooled_cond, 0, topk_idx_unique)
 
-        num_classes = cond.shape[0]
-
-        # Expand for all classes
+        # Expand for all classes: (B, K, ...) -> (B*K, ...)
         cond = cond.unsqueeze(0).expand(bsz, -1, -1, -1)
         cond = rearrange(cond, "b k s d -> (b k) s d")
 
         pooled_cond = pooled_cond.unsqueeze(0).expand(bsz, -1, -1)
         pooled_cond = rearrange(pooled_cond, "b k d -> (b k) d")
 
-        # Expand latent and timestep for all classes
-        timesteps = timesteps.repeat_interleave(num_classes, dim=0)
+        # Expand timesteps for all classes
+        timesteps_expanded = timesteps.repeat_interleave(num_classes, dim=0)
 
         # Flow matching: noised_latent = (1-t)*latent + t*noise
-        t = timesteps.view(-1, 1, 1, 1)
+        t = timesteps_expanded.view(-1, 1, 1, 1)
         latent_expanded = latent.repeat_interleave(num_classes, dim=0)
         noise_expanded = noise.repeat_interleave(num_classes, dim=0)
         noised_latent = (1 - t) * latent_expanded + t * noise_expanded
 
         # Move to transformer input device
-        noised_latent = noised_latent.to(self.transformer_input_device, dtype=torch.bfloat16)
-        timesteps_scaled = (timesteps * 1000).to(self.transformer_input_device, dtype=torch.bfloat16)
-        cond = cond.to(self.transformer_input_device, dtype=torch.bfloat16)
-        pooled_cond = pooled_cond.to(self.transformer_input_device, dtype=torch.bfloat16)
+        noised_latent_input = noised_latent.to(self.transformer_input_device, dtype=torch.bfloat16)
+        timesteps_scaled = (timesteps_expanded * 1000).to(self.transformer_input_device, dtype=torch.bfloat16)
+        cond_input = cond.to(self.transformer_input_device, dtype=torch.bfloat16)
+        pooled_cond_input = pooled_cond.to(self.transformer_input_device, dtype=torch.bfloat16)
 
-        # Forward through transformer
+        # Forward through transformer (output will be on cuda:1 due to dispatch)
         pred_velocity = self.transformer(
-            hidden_states=noised_latent,
+            hidden_states=noised_latent_input,
             timestep=timesteps_scaled,
-            encoder_hidden_states=cond,
-            pooled_projections=pooled_cond,
+            encoder_hidden_states=cond_input,
+            pooled_projections=pooled_cond_input,
             return_dict=False,
         )[0]
 
-        # Move output back to VAE device and convert to float32 for loss
-        pred_velocity = pred_velocity.to(self.vae_device, dtype=torch.float32)
+        # Move output back to loss computation device and convert to float32
+        pred_velocity = pred_velocity.to(device, dtype=torch.float32)
+
+        # Reshape prediction: (B*K, C, H, W) -> (B, K, C, H, W)
+        pred_velocity = rearrange(pred_velocity, "(b k) c h w -> b k c h w", b=bsz, k=num_classes)
+
+        # Ensure topk_probs and mask_metric are float32
         topk_probs = topk_probs.float()
         mask_metric = mask_metric.float()
 
-        # Apply mask
-        pred_velocity = pred_velocity * mask_metric.repeat_interleave(num_classes, dim=0)
+        # Apply mask to prediction (broadcast over classes and channels)
+        # mask_metric: (B, 1, H, W) -> expand to match pred_velocity
+        pred_velocity = pred_velocity * mask_metric.unsqueeze(1)
+
+        # Compute weighted prediction: sum over classes weighted by probabilities
+        # topk_probs: (B, K, H, W), pred_velocity: (B, K, C, H, W)
+        weighted_pred = torch.einsum("b k h w, b k c h w -> b c h w", topk_probs, pred_velocity)
 
         # Target velocity: noise - latent (for flow matching)
         target = (noise - latent).float()
-        target = target * mask_metric
-
-        # Compute weighted prediction
-        pred_velocity = rearrange(pred_velocity, "(b k) c h w -> b k c h w", b=bsz)
-        weighted_pred = torch.einsum("b k h w, b k c h w -> b c h w", topk_probs, pred_velocity)
+        target = target * mask_metric  # Apply same mask
 
         # MSE loss
         loss = F.mse_loss(weighted_pred, target)

@@ -148,7 +148,8 @@ class SegformerModel(nn.Module):
             # Then unfreeze norm layers
             for name, module in self.model.named_modules():
                 if 'norm' in name.lower() or isinstance(module, (nn.LayerNorm, nn.BatchNorm2d)):
-                    module.requires_grad_(True)
+                    for param in module.parameters():
+                        param.requires_grad = True
         else:
             self.model.requires_grad_(True)
 

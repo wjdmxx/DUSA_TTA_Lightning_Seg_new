@@ -7,7 +7,7 @@ dataset_name: "ade20k_c"
 #   data_root/
 #     ADE20K_val-c/{corruption}/{severity}/validation/*.jpg
 #     annotations/validation/*.png
-data_root: "/mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data/"
+data_root: "data/ade20k"
 split: "validation"
 
 # Corruption types for TTA evaluation (15 types)

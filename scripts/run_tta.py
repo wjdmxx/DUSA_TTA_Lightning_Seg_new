@@ -49,13 +49,12 @@ def setup_wandb(cfg: DictConfig) -> WandbLogger:
     return logger
 
 
-def create_trainer(cfg: DictConfig, logger: WandbLogger, task_name: str) -> pl.Trainer:
+def create_trainer(cfg: DictConfig, logger: WandbLogger) -> pl.Trainer:
     """Create PyTorch Lightning Trainer.
 
     Args:
         cfg: Configuration
         logger: WandB logger
-        task_name: Name of current task
 
     Returns:
         Trainer instance
@@ -87,67 +86,6 @@ def create_trainer(cfg: DictConfig, logger: WandbLogger, task_name: str) -> pl.T
     return trainer
 
 
-def run_single_task(
-    cfg: DictConfig,
-    task_idx: int,
-    task_name: str,
-    datamodule: SingleTaskDataModule,
-    logger: WandbLogger,
-    initial_state: dict = None
-):
-    """Run TTA on a single task.
-
-    Args:
-        cfg: Configuration
-        task_idx: Task index
-        task_name: Task name
-        datamodule: DataModule for this task
-        logger: WandB logger
-        initial_state: Initial model state (for reset between tasks)
-
-    Returns:
-        Final mIoU for this task
-    """
-    print(f"\n{'='*60}")
-    print(f"Task {task_idx}: {task_name}")
-    print(f"{'='*60}\n")
-
-    # Create TTA module
-    tta_module = create_tta_module(
-        model_cfg=cfg.model,
-        tta_cfg=cfg.tta,
-        logging_cfg=cfg.logging,
-        data_cfg=cfg.data,
-        task_name=task_name,
-        task_idx=task_idx
-    )
-
-    # Load initial state if provided (for continual=False)
-    if initial_state is not None and not cfg.tta.continual:
-        tta_module.model.load_state_dict(initial_state, strict=False)
-
-    # Create trainer for this task
-    trainer = create_trainer(cfg, logger, task_name)
-
-    # Run TTA
-    trainer.fit(tta_module, datamodule)
-
-    # Get final metrics
-    final_miou = tta_module.train_miou.compute().item() * 100
-
-    # Log task completion
-    if wandb.run is not None:
-        wandb.log({
-            f"task_{task_idx}_final_mIoU": final_miou,
-            "task_completed": task_idx + 1,
-        })
-
-    print(f"\nTask {task_idx} ({task_name}) completed - mIoU: {final_miou:.2f}%\n")
-
-    # Return state for next task (if continual)
-    return final_miou, tta_module.model.state_dict()
-
-
 @hydra.main(config_path="../configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     """Main entry point for TTA.
@@ -173,9 +111,9 @@ def main(cfg: DictConfig):
         print(f"  {i}: {name}")
     print()
 
-    # Create initial model to get initial state
-    print("Creating initial model...")
-    initial_module = create_tta_module(
+    # Create TTA module once (model loading is expensive)
+    print("Creating TTA module (this may take a while for SD3)...")
+    tta_module = create_tta_module(
         model_cfg=cfg.model,
         tta_cfg=cfg.tta,
         logging_cfg=cfg.logging,
@@ -183,18 +121,38 @@ def main(cfg: DictConfig):
         task_name="init",
         task_idx=-1
     )
-    initial_state = initial_module.model.get_initial_state()
-    del initial_module
-    torch.cuda.empty_cache()
 
-    # Run TTA on each task
-    all_miou = []
-    current_state = initial_state
+    # Configure gradients and get initial state
+    tta_module.model.configure_tta_grad()
+    initial_state = tta_module.model.get_initial_state()
 
     # Get split from config
     split = cfg.data.get("split", "validation")
 
+    # Run TTA on each task
+    all_miou = []
+
     for task_idx, task_name in enumerate(task_names):
+        print(f"\n{'='*60}")
+        print(f"Task {task_idx}: {task_name}")
+        print(f"{'='*60}\n")
+
+        # Reset model if not continual
+        if not cfg.tta.continual or task_idx == 0:
+            print("Resetting model to initial state...")
+            tta_module.model.reset_to_initial_state(initial_state)
+            tta_module.model.configure_tta_grad()
+            tta_module.model.set_eval_mode()
+
+        # Update task info
+        tta_module.task_name = task_name
+        tta_module.task_idx = task_idx
+
+        # Reset metrics
+        tta_module.train_miou.reset()
+        tta_module.train_iou_per_class.reset()
+        tta_module.train_loss_avg.reset()
+
         # Create dataset for this task
         corruption = task_name.rsplit("_s", 1)[0]
         severity = int(task_name.rsplit("_s", 1)[1])
@@ -216,17 +174,25 @@ def main(cfg: DictConfig):
             pin_memory=cfg.data.pin_memory,
         )
 
-        # Run TTA on this task
-        miou, current_state = run_single_task(
-            cfg=cfg,
-            task_idx=task_idx,
-            task_name=task_name,
-            datamodule=datamodule,
-            logger=logger,
-            initial_state=initial_state if not cfg.tta.continual else current_state
-        )
+        # Create trainer for this task
+        trainer = create_trainer(cfg, logger)
 
-        all_miou.append(miou)
+        # Run TTA
+        trainer.fit(tta_module, datamodule)
+
+        # Get final metrics
+        final_miou = tta_module.train_miou.compute().item() * 100
+
+        # Log task completion
+        if wandb.run is not None:
+            wandb.log({
+                f"task_{task_idx}_final_mIoU": final_miou,
+                "task_completed": task_idx + 1,
+            })
+
+        print(f"\nTask {task_idx} ({task_name}) completed - mIoU: {final_miou:.2f}%\n")
+
+        all_miou.append(final_miou)
 
         # Clear cache between tasks
         torch.cuda.empty_cache()

@@ -1,10 +1,11 @@
 """Combined model that unifies discriminative and generative models for TTA."""
 
 from typing import Dict, Tuple, Optional
+from copy import deepcopy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from .discriminative import SegformerModel, resize_image_short_edge
 from .generative import SD3GenerativeModel
@@ -56,27 +57,17 @@ class CombinedModel(nn.Module):
         # Initialize generative model only if needed
         if forward_mode == "tta":
             print("Initializing generative model (SD3)...")
+            # Create a copy of generative_cfg to avoid modifying the original
+            gen_cfg = OmegaConf.to_container(generative_cfg, resolve=True)
+            gen_cfg = OmegaConf.create(gen_cfg)
             # Pass loss config to generative model
-            generative_cfg.topk = loss_cfg.topk
-            generative_cfg.temperature = loss_cfg.temperature
-            generative_cfg.classes_threshold = loss_cfg.classes_threshold
-            self.generative = SD3GenerativeModel(generative_cfg)
+            gen_cfg.topk = loss_cfg.topk
+            gen_cfg.temperature = loss_cfg.temperature
+            gen_cfg.classes_threshold = loss_cfg.classes_threshold
+            self.generative = SD3GenerativeModel(gen_cfg)
         else:
             self.generative = None
             print("Forward mode is 'discriminative_only', skipping generative model")
-
-    def preprocess_image(self, image: torch.Tensor) -> torch.Tensor:
-        """Preprocess image: resize so short edge = target_short_edge.
-
-        This handles both horizontal and vertical images correctly.
-
-        Args:
-            image: Input image tensor of shape (B, C, H, W) or (C, H, W)
-
-        Returns:
-            Resized image tensor
-        """
-        return resize_image_short_edge(image, self.target_short_edge)
 
     def forward(
         self,
@@ -87,33 +78,30 @@ class CombinedModel(nn.Module):
 
         Args:
             images: Input images of shape (B, C, H, W) in [0, 255] RGB format
+                   Note: images should already be resized by dataloader (short edge = 512)
             return_predictions: Whether to return segmentation predictions
 
         Returns:
             Dictionary containing:
             - "loss": TTA loss (or None if discriminative_only mode)
             - "logits": Segmentation logits at 1/4 resolution
-            - "predictions": Segmentation predictions (if return_predictions=True)
+            - "predictions": Segmentation predictions at input resolution (if return_predictions=True)
         """
-        # Store original size for later
-        original_size = (images.shape[2], images.shape[3])
+        # Store input size (already resized by dataloader)
+        input_size = (images.shape[2], images.shape[3])
 
-        # Resize image
-        resized_images = self.preprocess_image(images)
-        resized_size = (resized_images.shape[2], resized_images.shape[3])
+        # Preprocess for discriminative model (normalize)
+        disc_input = self.discriminative.preprocess(images)
 
-        # Preprocess for discriminative model
-        disc_input = self.discriminative.preprocess(resized_images)
-
-        # Get segmentation logits
+        # Get segmentation logits (at 1/4 resolution)
         logits = self.discriminative(disc_input)
 
         result = {"logits": logits}
 
         # Compute TTA loss if in TTA mode
         if self.forward_mode == "tta" and self.generative is not None:
-            # Pass resized images (in original scale [0,255]) and logits to generative model
-            loss = self.generative(resized_images, logits)
+            # Pass images (in original scale [0,255]) and logits to generative model
+            loss = self.generative(images, logits)
             result["loss"] = loss
         else:
             # No loss in discriminative_only mode
@@ -121,10 +109,10 @@ class CombinedModel(nn.Module):
 
         # Get predictions if requested
         if return_predictions:
-            # Upsample logits to original image size
+            # Upsample logits to input image size (which is the same as label size after dataloader resize)
             upsampled_logits = F.interpolate(
                 logits,
-                size=original_size,
+                size=input_size,
                 mode='bilinear',
                 align_corners=False
             )
@@ -136,20 +124,15 @@ class CombinedModel(nn.Module):
     def get_predictions(
         self,
         images: torch.Tensor,
-        original_size: Optional[Tuple[int, int]] = None
     ) -> torch.Tensor:
         """Get segmentation predictions.
 
         Args:
             images: Input images of shape (B, C, H, W) in [0, 255] RGB format
-            original_size: Original (H, W) to resize predictions to
 
         Returns:
             Predictions tensor of shape (B, H, W) with class indices
         """
-        if original_size is None:
-            original_size = (images.shape[2], images.shape[3])
-
         with torch.no_grad():
             result = self.forward(images, return_predictions=True)
 
