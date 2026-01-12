@@ -57,6 +57,7 @@ def build_generative_model(cfg: DictConfig) -> Optional[SD3GenerativeModel]:
         classes_threshold=gen_cfg.classes_threshold,
         prompt_template=gen_cfg.prompt,
         class_names=gen_cfg.class_names,
+        embedding_cache_dir=gen_cfg.get('embedding_cache_dir', './embedding_cache'),
     )
 
 

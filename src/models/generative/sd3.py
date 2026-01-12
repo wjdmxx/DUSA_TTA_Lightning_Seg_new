@@ -6,6 +6,10 @@ for computing diffusion-based losses to assist discriminative model adaptation.
 
 from typing import Tuple, Optional, List, Union
 from dataclasses import dataclass
+from pathlib import Path
+import hashlib
+import os
+import gc
 
 import torch
 import torch.nn as nn
@@ -54,6 +58,7 @@ class SD3GenerativeModel(nn.Module):
         classes_threshold: int = 20,
         prompt_template: str = "a photo of a {}",
         class_names: Union[str, Tuple[str, ...]] = "ADE_CATEGORIES",
+        embedding_cache_dir: Optional[str] = None,
     ):
         """Initialize SD3 model.
         
@@ -67,6 +72,8 @@ class SD3GenerativeModel(nn.Module):
             classes_threshold: Maximum number of classes to process
             prompt_template: Template for class prompts (use {} for class name)
             class_names: Category names or key to look up
+            embedding_cache_dir: Directory to cache pre-computed embeddings.
+                                 If None, uses './embedding_cache'
         """
         super().__init__()
         
@@ -78,87 +85,187 @@ class SD3GenerativeModel(nn.Module):
         self.classes_threshold = classes_threshold
         self.prompt_template = prompt_template
         
+        # Set up embedding cache directory
+        if embedding_cache_dir is None:
+            embedding_cache_dir = "./embedding_cache"
+        self.embedding_cache_dir = Path(embedding_cache_dir)
+        self.embedding_cache_dir.mkdir(parents=True, exist_ok=True)
+        
         # Resolve class names
         if isinstance(class_names, str):
             if class_names == "ADE_CATEGORIES":
                 self.class_names = ADE_CATEGORIES
+                self._class_names_key = class_names
             else:
                 raise ValueError(f"Unknown class names key: {class_names}")
         else:
             self.class_names = class_names
+            self._class_names_key = "custom"
         
         self.num_classes = len(self.class_names)
+        
+        # Try to load cached embeddings first (no GPU needed)
+        cache_path = self._get_embedding_cache_path()
+        embeddings_loaded = False
+        
+        if cache_path.exists():
+            print(f"Loading cached embeddings from {cache_path}...")
+            try:
+                cached_data = torch.load(cache_path, map_location="cpu", weights_only=True)
+                class_embeddings = cached_data["class_embeddings"]
+                pooled_embeddings = cached_data["pooled_embeddings"]
+                embeddings_loaded = True
+                print(f"Successfully loaded cached embeddings for {class_embeddings.shape[0]} classes")
+            except Exception as e:
+                print(f"Failed to load cached embeddings: {e}")
+                embeddings_loaded = False
         
         # Load pipeline and extract components
         # NOTE: Load in float32 to ensure uniform dtype for FSDP compatibility.
         # Mixed precision training is handled by PyTorch Lightning's precision setting.
         print(f"Loading SD3 from {model_path}...")
-        pipe = StableDiffusion3Pipeline.from_pretrained(
-            model_path,
-            torch_dtype=torch.float32,
-        )
         
-        # Extract components
-        self.vae: AutoencoderKL = pipe.vae
-        self.transformer: SD3Transformer2DModel = pipe.transformer
-        self.scheduler: FlowMatchEulerDiscreteScheduler = pipe.scheduler
+        if embeddings_loaded:
+            # Embeddings are cached - no need to load text encoders
+            # Load only VAE and Transformer directly to save memory
+            print("Loading only VAE and Transformer (embeddings are cached)...")
+            
+            self.vae = AutoencoderKL.from_pretrained(
+                model_path,
+                subfolder="vae",
+                torch_dtype=torch.float32,
+            )
+            self.transformer = SD3Transformer2DModel.from_pretrained(
+                model_path,
+                subfolder="transformer",
+                torch_dtype=torch.float32,
+            )
+            self.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+                model_path,
+                subfolder="scheduler",
+            )
+            
+            # Get VAE scaling factor
+            self.vae_scale_factor = (
+                self.vae.config.scaling_factor 
+                if hasattr(self.vae.config, 'scaling_factor') 
+                else 1.5305
+            )
+        else:
+            # Need to compute embeddings - load full pipeline with text encoders
+            print("Loading full pipeline (need to compute embeddings)...")
+            pipe = StableDiffusion3Pipeline.from_pretrained(
+                model_path,
+                torch_dtype=torch.float32,
+            )
+            
+            # Extract components (keep on CPU initially)
+            self.vae: AutoencoderKL = pipe.vae
+            self.transformer: SD3Transformer2DModel = pipe.transformer
+            self.scheduler: FlowMatchEulerDiscreteScheduler = pipe.scheduler
+            
+            # Get VAE scaling factor
+            self.vae_scale_factor = (
+                self.vae.config.scaling_factor 
+                if hasattr(self.vae.config, 'scaling_factor') 
+                else 1.5305
+            )
+            
+            # Compute class embeddings on CPU
+            print("Computing class embeddings on CPU (this may take a while)...")
+            class_embeddings, pooled_embeddings = self._compute_class_embeddings_cpu(pipe)
+            
+            # Save to cache
+            print(f"Saving embeddings to cache: {cache_path}")
+            torch.save({
+                "class_embeddings": class_embeddings,
+                "pooled_embeddings": pooled_embeddings,
+                "prompt_template": self.prompt_template,
+                "class_names_key": self._class_names_key,
+                "num_classes": self.num_classes,
+            }, cache_path)
+            
+            # Delete text encoders from pipe to free memory (no longer needed)
+            del pipe.text_encoder
+            del pipe.text_encoder_2
+            del pipe.text_encoder_3
+            del pipe.tokenizer
+            del pipe.tokenizer_2
+            del pipe.tokenizer_3
+            del pipe
+            
+            # Force garbage collection
+            gc.collect()
         
-        # Get VAE scaling factor
-        self.vae_scale_factor = (
-            self.vae.config.scaling_factor 
-            if hasattr(self.vae.config, 'scaling_factor') 
-            else 1.5305
-        )
-        
-        # Pre-compute class embeddings (IMPORTANT: do this before any model distribution)
-        print("Pre-computing class embeddings...")
-        class_embeddings, pooled_embeddings = self._compute_class_embeddings(pipe)
+        # Register embeddings as buffers
         self.register_buffer('class_embeddings', class_embeddings)
         self.register_buffer('pooled_embeddings', pooled_embeddings)
         
-        # Clean up pipeline
-        del pipe
-        torch.cuda.empty_cache()
+        # Force garbage collection and clear CUDA cache
+        gc.collect()
         
         # Freeze VAE (gradients only flow through transformer and to discriminative model)
         self.vae.requires_grad_(False)
         
         print(f"SD3 initialized with {self.num_classes} classes")
     
+    def _get_embedding_cache_path(self) -> Path:
+        """Generate cache file path based on prompt template and class names.
+        
+        The filename includes a hash of the prompt template and class names
+        to ensure different configurations use different cache files.
+        
+        Returns:
+            Path to the cache file
+        """
+        # Create a hashable string from prompt template and class names
+        config_str = f"{self.prompt_template}|{self._class_names_key}|{self.num_classes}"
+        config_hash = hashlib.md5(config_str.encode()).hexdigest()[:12]
+        
+        # Create a human-readable prefix from the prompt template
+        # Replace special characters and truncate
+        prompt_prefix = self.prompt_template.replace("{}", "CLASS")
+        prompt_prefix = "".join(c if c.isalnum() or c in "_ " else "_" for c in prompt_prefix)
+        prompt_prefix = prompt_prefix.replace(" ", "_")[:30]
+        
+        filename = f"sd3_embeddings_{prompt_prefix}_{self._class_names_key}_{config_hash}.pt"
+        return self.embedding_cache_dir / filename
+    
     @torch.no_grad()
-    def _compute_class_embeddings(
+    def _compute_class_embeddings_cpu(
         self,
         pipe: StableDiffusion3Pipeline
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Pre-compute text embeddings for all classes.
+        """Pre-compute text embeddings for all classes on CPU (avoid GPU OOM).
+        
+        This method computes embeddings entirely on CPU to avoid OOM errors
+        during initialization when multiple GPUs are used for FSDP.
         
         Args:
-            pipe: SD3 pipeline with text encoders
+            pipe: SD3 pipeline with text encoders (kept on CPU)
             
         Returns:
-            Tuple of (class_embeddings, pooled_embeddings)
+            Tuple of (class_embeddings, pooled_embeddings) on CPU
         """
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        pipe.to(device)
+        # Ensure pipe is on CPU
+        pipe.to("cpu")
         
         prompt_embeds_list = []
         pooled_embeds_list = []
         
-        for class_name in tqdm(self.class_names, desc="Encoding class prompts"):
+        for class_name in tqdm(self.class_names, desc="Encoding class prompts (CPU)"):
             prompt = self.prompt_template.format(class_name)
             
+            # encode_prompt works on CPU, just slower
             prompt_embeds, _, pooled_prompt_embeds, _ = pipe.encode_prompt(
                 prompt=prompt,
                 prompt_2=None,
                 prompt_3=None,
+                device="cpu",
             )
             
-            prompt_embeds_list.append(prompt_embeds.cpu())
-            pooled_embeds_list.append(pooled_prompt_embeds.cpu())
-        
-        # Move pipe back to CPU to save memory
-        pipe.to("cpu")
-        torch.cuda.empty_cache()
+            prompt_embeds_list.append(prompt_embeds)
+            pooled_embeds_list.append(pooled_prompt_embeds)
         
         class_embeddings = torch.cat(prompt_embeds_list, dim=0)  # (num_classes, seq_len, dim)
         pooled_embeddings = torch.cat(pooled_embeds_list, dim=0)  # (num_classes, dim)

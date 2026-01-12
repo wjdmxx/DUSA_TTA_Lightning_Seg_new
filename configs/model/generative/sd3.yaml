@@ -22,6 +22,10 @@ classes_threshold: 20  # Max classes to process per forward pass
 prompt: "a photo of a {}"
 class_names: "ADE_CATEGORIES"
 
+# Embedding cache directory
+# Pre-computed embeddings are saved here to avoid recomputation and OOM issues
+embedding_cache_dir: "./embedding_cache"
+
 # Preprocessing
 preprocessor:
   input_size: [512, 512]
