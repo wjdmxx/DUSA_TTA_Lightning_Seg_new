@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
@@ -133,10 +134,10 @@ class ADE20KCorruptedDataset(Dataset):
         # Convert to tensors
         image_tensor = torch.from_numpy(
             # HWC -> CHW, uint8 -> float32, [0, 255] -> [0, 1]
-            (Image.open(img_path).convert("RGB").__array__() / 255.0).astype("float32")
+            (np.array(Image.open(img_path).convert("RGB")) / 255.0).astype("float32")
         ).permute(2, 0, 1)
 
-        mask_tensor = torch.from_numpy(mask.__array__().astype("int64"))
+        mask_tensor = torch.from_numpy(np.array(mask).astype("int64"))
 
         # ADE20K mask values: 0 = background/ignore, 1-150 = classes
         # Convert to 0-indexed: subtract 1, set background to ignore_index (255)
