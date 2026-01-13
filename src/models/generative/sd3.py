@@ -57,7 +57,8 @@ class SD3GenerativeModel(nn.Module):
             "model_path", "stabilityai/stable-diffusion-3-medium-diffusers"
         )
         self.topk = config.get("loss", {}).get("topk", 1)
-        self.classes_threshold = config.get("loss", {}).get("classes_threshold", 20)
+        self.classes_max_num = config.get("loss", {}).get("classes_max_num", 20)
+        self.classes_min_num = config.get("loss", {}).get("classes_min_num", 5)
         self.timestep_range = config.get("timestep_range", [0.25, 0.25])
 
         # Sliding window config
@@ -179,7 +180,7 @@ class SD3GenerativeModel(nn.Module):
     def select_classes(
         self,
         logits: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Select unique classes from logits and compute probabilities.
 
         Args:
@@ -189,9 +190,13 @@ class SD3GenerativeModel(nn.Module):
             Tuple of:
             - probs: [B, N, H, W] softmax probabilities over N selected classes
             - unique_classes: [N] selected unique class indices
+            - mask: [B, H, W] bool tensor, True = participate in loss, False = masked
         """
         B, C, H, W = logits.shape
         device = logits.device
+
+        # Initialize mask: all pixels participate by default
+        mask = torch.ones(B, H, W, dtype=torch.bool, device=device)
 
         # Get topk indices per pixel to find candidate classes
         _, topk_idx = torch.topk(logits, self.topk, dim=1)  # [B, K, H, W]
@@ -199,28 +204,62 @@ class SD3GenerativeModel(nn.Module):
         # Get unique classes across all pixels and batch
         unique_classes = topk_idx.unique()
 
-        # Limit number of classes if needed
-        if unique_classes.shape[0] > self.classes_threshold:
-            # Keep classes that appear in top-1 predictions
-            top1_idx = logits.argmax(dim=1)  # [B, H, W]
-            top1_unique = top1_idx.unique()
+        # Get top-1 predictions for mask logic
+        top1_idx = logits.argmax(dim=1)  # [B, H, W]
+        top1_unique = top1_idx.unique()
 
-            if top1_unique.shape[0] > self.classes_threshold:
-                # Random sample from top1 classes
+        # Limit number of classes if needed (max logic)
+        if unique_classes.shape[0] > self.classes_max_num:
+            if top1_unique.shape[0] > self.classes_max_num:
+                # Top1 classes exceed max: random sample and create mask
                 perm = torch.randperm(top1_unique.shape[0], device=device)
-                unique_classes = top1_unique[perm[: self.classes_threshold]]
+                unique_classes = top1_unique[perm[: self.classes_max_num]]
+                
+                # Mask pixels whose top1 class is not in selected classes
+                # For each pixel, check if top1_idx is in unique_classes
+                mask = torch.isin(top1_idx, unique_classes)  # [B, H, W]
             else:
-                # Keep all top1, fill remaining with other classes
+                # Keep all top1, fill remaining with other classes from topk
                 other_classes = unique_classes[
                     ~torch.isin(unique_classes, top1_unique)
                 ]
-                remaining = self.classes_threshold - top1_unique.shape[0]
+                remaining = self.classes_max_num - top1_unique.shape[0]
                 if remaining > 0 and other_classes.shape[0] > 0:
                     perm = torch.randperm(other_classes.shape[0], device=device)
                     selected_other = other_classes[perm[:remaining]]
                     unique_classes = torch.cat([top1_unique, selected_other])
                 else:
                     unique_classes = top1_unique
+
+        # Fill up to min if needed (min logic with weighted sampling)
+        if unique_classes.shape[0] < self.classes_min_num:
+            num_to_fill = self.classes_min_num - unique_classes.shape[0]
+            
+            # Get all class indices
+            all_classes = torch.arange(C, device=device)
+            
+            # Find remaining classes (not yet selected)
+            remaining_mask = ~torch.isin(all_classes, unique_classes)
+            remaining_classes = all_classes[remaining_mask]
+            
+            if remaining_classes.shape[0] > 0:
+                # Compute logits sum for each remaining class across all pixels
+                # logits: [B, C, H, W] -> sum over B, H, W for remaining classes
+                remaining_logits = logits[:, remaining_classes, :, :]  # [B, num_remaining, H, W]
+                logits_sum = remaining_logits.sum(dim=(0, 2, 3))  # [num_remaining]
+                
+                # Convert to sampling probabilities using softmax
+                sampling_probs = F.softmax(logits_sum, dim=0)  # [num_remaining]
+                
+                # Sample classes based on probabilities
+                num_to_sample = min(num_to_fill, remaining_classes.shape[0])
+                sampled_indices = torch.multinomial(
+                    sampling_probs, num_to_sample, replacement=False
+                )
+                sampled_classes = remaining_classes[sampled_indices]
+                
+                # Add sampled classes to unique_classes
+                unique_classes = torch.cat([unique_classes, sampled_classes])
 
         # Gather logits for selected classes: [B, N, H, W]
         # unique_classes: [N]
@@ -230,7 +269,7 @@ class SD3GenerativeModel(nn.Module):
         # Compute softmax over the N selected classes
         probs = F.softmax(gathered_logits, dim=1)  # [B, N, H, W]
 
-        return probs, unique_classes
+        return probs, unique_classes, mask
 
     def compute_weighted_velocity(
         self,
@@ -323,8 +362,8 @@ class SD3GenerativeModel(nn.Module):
         )
 
         # Select N unique classes and compute softmax probabilities over them
-        # probs: [B, N, H, W], unique_classes: [N]
-        probs, unique_classes = self.select_classes(logits_downsampled)
+        # probs: [B, N, H, W], unique_classes: [N], mask: [B, H, W]
+        probs, unique_classes, mask = self.select_classes(logits_downsampled)
         N = unique_classes.shape[0]
 
         # Get text embeddings for selected classes
@@ -389,8 +428,30 @@ class SD3GenerativeModel(nn.Module):
         # weighted_pred: [B, C, H, W]
         weighted_pred = self.compute_weighted_velocity(pred_velocity, probs)
 
-        # Compute MSE loss
-        loss = F.mse_loss(weighted_pred, target)
+        # Compute normalized L2 loss with mask
+        # mask: [B, H, W] -> expand to [B, 1, H, W] for broadcasting
+        mask_expanded = mask.unsqueeze(1).float()  # [B, 1, H, W]
+        
+        # Compute element-wise squared error
+        squared_error = (weighted_pred - target) ** 2  # [B, C, H, W]
+        
+        # Apply mask: only count masked-in pixels
+        masked_squared_error = squared_error * mask_expanded  # [B, C, H, W]
+        
+        # Compute per-sample mean squared error
+        # Count valid elements per sample
+        num_valid_per_sample = mask_expanded.sum(dim=(2, 3)) * squared_error.shape[1]  # [B, 1]
+        num_valid_per_sample = num_valid_per_sample.squeeze(1).clamp(min=1)  # [B]
+        
+        # Sum over C, H, W and divide by valid count
+        e = masked_squared_error.sum(dim=(1, 2, 3)) / num_valid_per_sample  # [B]
+        
+        # Apply normalized L2 loss: norm_l2 = e / (e + c)^p
+        p, c = 0.5, 1e-3
+        norm_l2_per_sample = e / (e + c).pow(p).detach()  # [B]
+        
+        # Average over batch
+        loss = norm_l2_per_sample.mean()
 
         return loss
 

@@ -30,7 +30,8 @@ sliding_window:
 # Loss configuration
 loss:
   topk: 1                    # Number of top classes per pixel
-  classes_threshold: 20      # Max unique classes
+  classes_max_num: 20        # Max unique classes (exceed -> mask unselected pixels)
+  classes_min_num: 5         # Min unique classes (below -> weighted sampling to fill)
   temperature: 1.0           # Softmax temperature
 
 # Timestep sampling range for flow matching
