@@ -11,7 +11,7 @@ defaults:
 
 # Experiment identification
 experiment:
-  name: sd3_tta
+  name: sd3_tta_1e-5
   id: 1  # Change this for different runs to avoid overwriting W&B runs
 
 # Device configuration
@@ -20,7 +20,7 @@ device:
   # num_gpus is auto-detected from CUDA_VISIBLE_DEVICES
 
 # Output directory (Hydra default)
-output_dir: ./outputs/${experiment.name}_${experiment.id}
+output_dir: ./outputs/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
 
 # Hydra configuration
 hydra:

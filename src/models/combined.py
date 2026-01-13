@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from omegaconf import DictConfig
 
 from .discriminative import DiscriminativeModel
@@ -104,7 +105,8 @@ class CombinedModel(nn.Module):
         # Compute generative loss if in TTA mode
         loss = None
         if self.forward_mode == "tta" and self.generative is not None:
-            loss = self.generative(images, logits)
+            normed_logits = F.normalize(logits, p=2, dim=1)
+            loss = self.generative(images, normed_logits)
 
         return logits, loss
 
