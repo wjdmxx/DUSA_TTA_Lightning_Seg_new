@@ -50,6 +50,8 @@ class TTARunner:
         )
         self.severity = config.get("data", {}).get("severity", 5)
 
+        self.short_edge_size = config.get("data", {}).get("preprocess", {}).get("short_edge_size", 512)
+
         # Data settings
         self.data_root = config.get("data", {}).get("root", "./data")
         self.num_workers = config.get("tta", {}).get("dataloader", {}).get(
@@ -207,7 +209,7 @@ class TTARunner:
             data_root=self.data_root,
             corruption=corruption,
             severity=self.severity,
-            short_edge_size=512,
+            short_edge_size=self.short_edge_size,
         )
 
         dataloader = create_dataloader(

@@ -17,7 +17,7 @@ batch_size: 1
 # - Accumulate gradients over this many steps before updating
 # - Effective batch size = batch_size * accumulation_steps
 # - Set to 1 to disable accumulation
-accumulation_steps: 1
+accumulation_steps: 4
 
 # Whether to update generative model
 update_generative: true
