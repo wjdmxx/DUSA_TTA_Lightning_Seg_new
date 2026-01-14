@@ -25,6 +25,7 @@ class SD3GenerativeModel(nn.Module):
 
     # VAE scaling factor for SD3
     VAE_SCALE_FACTOR = 1.5305
+    VAE_SHIFT_FACTOR = 0.0609
     # Latent channels
     LATENT_CHANNELS = 16
 
@@ -106,6 +107,9 @@ class SD3GenerativeModel(nn.Module):
         if hasattr(self.vae.config, "scaling_factor"):
             self.VAE_SCALE_FACTOR = self.vae.config.scaling_factor
 
+        if hasattr(self.vae.config, "shift_factor"):
+            self.VAE_SHIFT_FACTOR = self.vae.config.shift_factor
+
         # Setup transformer with multi-GPU dispatch
         device_map = self.transformer_config.get("device_map", "balanced")
         gradient_checkpointing = self.transformer_config.get(
@@ -155,8 +159,9 @@ class SD3GenerativeModel(nn.Module):
         images = images.to(self.vae.device, dtype=self.vae.dtype)
         with torch.no_grad():
             latent_dist = self.vae.encode(images).latent_dist
-            latent = latent_dist.mean * self.VAE_SCALE_FACTOR
-        return latent
+            latents = latent_dist.mean
+            latents = (latents - self.VAE_SHIFT_FACTOR) * self.VAE_SCALE_FACTOR
+        return latents
 
     def sample_timesteps(
         self,

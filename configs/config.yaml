@@ -11,7 +11,7 @@ defaults:
 
 # Experiment identification
 experiment:
-  name: sd3_tta_1e-5
+  name: sd3_tta_7.5e-6_new_loss
   id: 1  # Change this for different runs to avoid overwriting W&B runs
 
 # Device configuration
