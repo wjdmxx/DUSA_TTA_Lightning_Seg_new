@@ -40,6 +40,9 @@ class TTARunner:
         self.continual = config.get("tta", {}).get("continual", False)
         self.batch_size = config.get("tta", {}).get("batch_size", 1)
         self.forward_mode = config.get("tta", {}).get("forward_mode", "tta")
+        
+        # Gradient accumulation settings
+        self.accumulation_steps = config.get("tta", {}).get("accumulation_steps", 1)
 
         # Corruption settings
         self.corruptions = config.get("data", {}).get(
@@ -66,9 +69,13 @@ class TTARunner:
 
         # Global step counter
         self.global_step = 0
+        
+        # Accumulation step counter (resets after each optimizer step)
+        self.accumulation_count = 0
 
         logger.info(f"TTA Runner initialized: mode={self.forward_mode}, "
-                    f"continual={self.continual}, precision={self.precision}")
+                    f"continual={self.continual}, precision={self.precision}, "
+                    f"accumulation_steps={self.accumulation_steps}")
 
     def setup(self) -> None:
         """Setup all components."""
@@ -212,6 +219,11 @@ class TTARunner:
 
         # Reset metrics
         self.metrics.reset()
+        
+        # Reset gradient accumulation counter for this task
+        self.accumulation_count = 0
+        if self.optimizer is not None:
+            self.optimizer.zero_grad()
 
         # Process samples
         pbar = tqdm(dataloader, desc=f"TTA-{corruption}")
@@ -266,9 +278,18 @@ class TTARunner:
 
         # Backward pass if in TTA mode with loss
         if loss is not None and self.optimizer is not None:
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+            # Scale loss by accumulation steps for gradient averaging
+            scaled_loss = loss / self.accumulation_steps
+            scaled_loss.backward()
+            
+            # Increment accumulation counter
+            self.accumulation_count += 1
+            
+            # Only step optimizer when we've accumulated enough gradients
+            if self.accumulation_count >= self.accumulation_steps:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                self.accumulation_count = 0
 
         # Resize logits to mask size for evaluation
         logits_resized = F.interpolate(
