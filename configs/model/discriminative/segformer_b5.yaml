@@ -1,6 +1,9 @@
 # SegFormer B5 Model Configuration
 # Pre-trained on ADE20K
 
+# Model type: "huggingface" (default) or "mmseg"
+type: huggingface
+
 # HuggingFace model path
 model_name: nvidia/segformer-b5-finetuned-ade-640-640
 

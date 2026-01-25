@@ -1,0 +1,20 @@
+# SegFormer B5 Model Configuration (MMSegmentation version)
+# Pre-trained on ADE20K 512x512
+
+# Model type: use "mmseg" for OpenMMLab version
+type: mmseg
+
+# Local checkpoint path (download from MMSeg model zoo)
+# https://download.openmmlab.com/mmsegmentation/v0.5/segformer/segformer_mit-b5_512x512_160k_ade20k/segformer_mit-b5_512x512_160k_ade20k_20210726_145235-94cedf59.pth
+checkpoint: pretrained_models/segformer_mit-b5_512x512_160k_ade20k_20210726_145235-94cedf59.pth
+
+# Number of output classes
+num_classes: 150
+
+# Output stride (logits are H/4, W/4)
+output_stride: 4
+
+# Preprocessing (applied internally by MMSegDiscriminativeModel)
+# Uses MMSeg-style normalization:
+# mean=[123.675, 116.28, 103.53] / 255.0
+# std=[58.395, 57.12, 57.375] / 255.0

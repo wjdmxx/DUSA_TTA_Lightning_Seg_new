@@ -25,5 +25,11 @@ numpy>=1.24.0
 tqdm>=4.65.0
 einops>=0.6.0
 
+# Optional: OpenMMLab dependencies (for MMSeg SegFormer)
+# Install with: pip install openmim && mim install mmsegmentation
+# mmsegmentation>=1.0.0
+# mmengine>=0.7.0
+# mmcv>=2.0.0
+
 # Optional: for faster data loading
 # opencv-python>=4.7.0

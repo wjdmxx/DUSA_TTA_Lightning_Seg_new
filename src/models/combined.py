@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from omegaconf import DictConfig
 
 from .discriminative import DiscriminativeModel
+from .discriminative_mmseg import MMSegDiscriminativeModel
 from .generative import SD3GenerativeModel
 
 logger = logging.getLogger(__name__)
@@ -42,9 +43,16 @@ class CombinedModel(nn.Module):
         self.forward_mode = config.get("tta", {}).get("forward_mode", "tta")
         logger.info(f"Combined model forward mode: {self.forward_mode}")
 
-        # Initialize discriminative model
+        # Initialize discriminative model based on type
         disc_config = config.get("model", {}).get("discriminative", {})
-        self.discriminative = DiscriminativeModel(disc_config)
+        disc_type = disc_config.get("type", "huggingface")
+
+        if disc_type == "mmseg":
+            logger.info("Using MMSegmentation SegFormer model")
+            self.discriminative = MMSegDiscriminativeModel(disc_config)
+        else:
+            logger.info("Using HuggingFace SegFormer model")
+            self.discriminative = DiscriminativeModel(disc_config)
 
         # Initialize generative model (lazy setup)
         self.generative: Optional[SD3GenerativeModel] = None
