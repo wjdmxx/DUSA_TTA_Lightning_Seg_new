@@ -11,7 +11,7 @@ defaults:
 
 # Experiment identification
 experiment:
-  name: sd3_tta_1e-5_l2loss_min0_max20_topk1_shift_accumulation4
+  name: sd3_tta_1e-5_mseloss_min0_max20_topk1_shift_accumulation4
   id: 1  # Change this for different runs to avoid overwriting W&B runs
 
 # Device configuration

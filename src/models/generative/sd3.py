@@ -219,15 +219,13 @@ class SD3GenerativeModel(nn.Module):
                 # Top1 classes exceed max: random sample and create mask
                 perm = torch.randperm(top1_unique.shape[0], device=device)
                 unique_classes = top1_unique[perm[: self.classes_max_num]]
-                
+
                 # Mask pixels whose top1 class is not in selected classes
                 # For each pixel, check if top1_idx is in unique_classes
                 mask = torch.isin(top1_idx, unique_classes)  # [B, H, W]
             else:
                 # Keep all top1, fill remaining with other classes from topk
-                other_classes = unique_classes[
-                    ~torch.isin(unique_classes, top1_unique)
-                ]
+                other_classes = unique_classes[~torch.isin(unique_classes, top1_unique)]
                 remaining = self.classes_max_num - top1_unique.shape[0]
                 if remaining > 0 and other_classes.shape[0] > 0:
                     perm = torch.randperm(other_classes.shape[0], device=device)
@@ -239,30 +237,32 @@ class SD3GenerativeModel(nn.Module):
         # Fill up to min if needed (min logic with weighted sampling)
         if unique_classes.shape[0] < self.classes_min_num:
             num_to_fill = self.classes_min_num - unique_classes.shape[0]
-            
+
             # Get all class indices
             all_classes = torch.arange(C, device=device)
-            
+
             # Find remaining classes (not yet selected)
             remaining_mask = ~torch.isin(all_classes, unique_classes)
             remaining_classes = all_classes[remaining_mask]
-            
+
             if remaining_classes.shape[0] > 0:
                 # Compute logits sum for each remaining class across all pixels
                 # logits: [B, C, H, W] -> sum over B, H, W for remaining classes
-                remaining_logits = logits[:, remaining_classes, :, :]  # [B, num_remaining, H, W]
+                remaining_logits = logits[
+                    :, remaining_classes, :, :
+                ]  # [B, num_remaining, H, W]
                 logits_sum = remaining_logits.sum(dim=(0, 2, 3))  # [num_remaining]
-                
+
                 # Convert to sampling probabilities using softmax
                 sampling_probs = F.softmax(logits_sum, dim=0)  # [num_remaining]
-                
+
                 # Sample classes based on probabilities
                 num_to_sample = min(num_to_fill, remaining_classes.shape[0])
                 sampled_indices = torch.multinomial(
                     sampling_probs, num_to_sample, replacement=False
                 )
                 sampled_classes = remaining_classes[sampled_indices]
-                
+
                 # Add sampled classes to unique_classes
                 unique_classes = torch.cat([unique_classes, sampled_classes])
 
@@ -293,9 +293,7 @@ class SD3GenerativeModel(nn.Module):
         B = probs.shape[0]
         N = probs.shape[1]
         # Reshape: [B*N, C, H, W] -> [B, N, C, H, W]
-        pred_velocity = rearrange(
-            pred_velocity, "(b n) c h w -> b n c h w", b=B, n=N
-        )
+        pred_velocity = rearrange(pred_velocity, "(b n) c h w -> b n c h w", b=B, n=N)
         # Weighted sum: [B, N, H, W] x [B, N, C, H, W] -> [B, C, H, W]
         weighted = torch.einsum("b n h w, b n c h w -> b c h w", probs, pred_velocity)
         return weighted
@@ -362,9 +360,7 @@ class SD3GenerativeModel(nn.Module):
         latent_h, latent_w = latent.shape[2], latent.shape[3]
 
         # Downsample logits to latent resolution
-        logits_downsampled = downsample_logits_to_latent(
-            logits, (latent_h, latent_w)
-        )
+        logits_downsampled = downsample_logits_to_latent(logits, (latent_h, latent_w))
 
         # Select N unique classes and compute softmax probabilities over them
         # probs: [B, N, H, W], unique_classes: [N], mask: [B, H, W]
@@ -436,27 +432,34 @@ class SD3GenerativeModel(nn.Module):
         # Compute normalized L2 loss with mask
         # mask: [B, H, W] -> expand to [B, 1, H, W] for broadcasting
         mask_expanded = mask.unsqueeze(1).float()  # [B, 1, H, W]
-        
-        # Compute element-wise squared error
-        squared_error = (weighted_pred - target) ** 2  # [B, C, H, W]
-        
-        # Apply mask: only count masked-in pixels
-        masked_squared_error = squared_error * mask_expanded  # [B, C, H, W]
-        
-        # Compute per-sample mean squared error
-        # Count valid elements per sample
-        num_valid_per_sample = mask_expanded.sum(dim=(2, 3)) * squared_error.shape[1]  # [B, 1]
-        num_valid_per_sample = num_valid_per_sample.squeeze(1).clamp(min=1)  # [B]
-        
-        # Sum over C, H, W and divide by valid count
-        e = masked_squared_error.sum(dim=(1, 2, 3)) / num_valid_per_sample  # [B]
-        
-        # Apply normalized L2 loss: norm_l2 = e / (e + c)^p
-        p, c = 0.5, 1e-3
-        norm_l2_per_sample = e / (e + c).pow(p).detach()  # [B]
-        
-        # Average over batch
-        loss = norm_l2_per_sample.mean()
+
+        # # Compute element-wise squared error
+        # squared_error = (weighted_pred - target) ** 2  # [B, C, H, W]
+
+        # # Apply mask: only count masked-in pixels
+        # masked_squared_error = squared_error * mask_expanded  # [B, C, H, W]
+
+        # # Compute per-sample mean squared error
+        # # Count valid elements per sample
+        # num_valid_per_sample = mask_expanded.sum(dim=(2, 3)) * squared_error.shape[1]  # [B, 1]
+        # num_valid_per_sample = num_valid_per_sample.squeeze(1).clamp(min=1)  # [B]
+
+        # # Sum over C, H, W and divide by valid count
+        # e = masked_squared_error.sum(dim=(1, 2, 3)) / num_valid_per_sample  # [B]
+
+        # # Apply normalized L2 loss: norm_l2 = e / (e + c)^p
+        # p, c = 0.5, 1e-3
+        # norm_l2_per_sample = e / (e + c).pow(p).detach()  # [B]
+
+        # # Average over batch
+        # loss = norm_l2_per_sample.mean()
+
+        mask_bool = mask_expanded.bool()
+
+        valid_pred = weighted_pred.masked_select(mask_bool)
+        valid_target = target.masked_select(mask_bool)
+
+        loss = F.mse_loss(valid_pred, valid_target)
 
         return loss
 
