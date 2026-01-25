@@ -195,11 +195,11 @@ class ADE20KCorruptedDataset(Dataset):
         ).squeeze(0)
 
         # Resize mask with nearest neighbor
-        mask = torch.nn.functional.interpolate(
-            mask.unsqueeze(0).unsqueeze(0).float(),
-            size=(new_h, new_w),
-            mode="nearest",
-        ).squeeze(0).squeeze(0).long()
+        # mask = torch.nn.functional.interpolate(
+        #     mask.unsqueeze(0).unsqueeze(0).float(),
+        #     size=(new_h, new_w),
+        #     mode="nearest",
+        # ).squeeze(0).squeeze(0).long()
 
         return image, mask
 

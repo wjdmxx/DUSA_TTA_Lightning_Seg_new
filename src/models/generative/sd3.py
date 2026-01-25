@@ -366,7 +366,7 @@ class SD3GenerativeModel(nn.Module):
         # probs: [B, N, H, W], unique_classes: [N], mask: [B, H, W]
         probs, unique_classes, mask = self.select_classes(logits_downsampled)
         N = unique_classes.shape[0]
-
+        
         # Get text embeddings for selected classes
         # class_emb: [N, seq_len, hidden], pooled_emb: [N, hidden]
         class_emb = self.class_embeddings[unique_classes.to("cpu")].to(device)
