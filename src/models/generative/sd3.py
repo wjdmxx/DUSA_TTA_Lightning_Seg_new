@@ -61,6 +61,11 @@ class SD3GenerativeModel(nn.Module):
         self.classes_threshold = config.get("loss", {}).get("classes_threshold", 20)
         self.timestep_range = config.get("timestep_range", [0.25, 0.25])
 
+        # Region-weighted loss config
+        region_config = config.get("region_loss", {})
+        self.region_size = region_config.get("size", 1)      # 区域大小，奇数如 7，1 表示不使用区域加权
+        self.region_stride = region_config.get("stride", 1)  # stride=1 为每像素，>1 为窗口滑动
+
         # Sliding window config
         sw_config = config.get("sliding_window", {})
         self.window_size = sw_config.get("size", 512)
@@ -261,6 +266,74 @@ class SD3GenerativeModel(nn.Module):
         weighted = torch.einsum("b n h w, b n c h w -> b c h w", probs, pred_velocity)
         return weighted
 
+    def compute_regional_weighted_loss(
+        self,
+        pred_velocity: torch.Tensor,  # [B*N, C, H, W]
+        probs: torch.Tensor,          # [B, N, H, W]
+        target: torch.Tensor,         # [B, C, H, W]
+        region_size: int = 7,
+        stride: int = 1,
+    ) -> torch.Tensor:
+        """区域加权 loss 计算（使用 unfold 优化）。
+
+        对于每个区域：
+        - 如果 stride=1，每个像素位置是一个区域，用该像素自己的 probs
+        - 如果 stride>1，区域内所有像素的 probs 取平均
+
+        边界处理：不 pad，只计算有效区域
+
+        Args:
+            pred_velocity: [B*N, C, H, W] predicted velocities for N classes
+            probs: [B, N, H, W] softmax probabilities over N classes
+            target: [B, C, H, W] target velocity
+            region_size: 区域大小，建议奇数（如 7）
+            stride: 滑动步长，1 为每像素独立区域
+
+        Returns:
+            Scalar loss tensor
+        """
+        B, N = probs.shape[0], probs.shape[1]
+        H, W = probs.shape[2], probs.shape[3]
+        C = pred_velocity.shape[1]
+
+        # Reshape pred_velocity: [B*N, C, H, W] -> [B, N, C, H, W]
+        pred_velocity = rearrange(pred_velocity, "(b n) c h w -> b n c h w", b=B, n=N)
+
+        # Unfold pred_velocity: [B, N, C, H, W] -> [B, N, C, nH, nW, rH, rW]
+        pred_unfold = pred_velocity.unfold(3, region_size, stride).unfold(4, region_size, stride)
+        nH, nW = pred_unfold.shape[3], pred_unfold.shape[4]
+
+        # Unfold target: [B, C, H, W] -> [B, C, nH, nW, rH, rW]
+        target_unfold = target.unfold(2, region_size, stride).unfold(3, region_size, stride)
+
+        # Unfold probs: [B, N, H, W] -> [B, N, nH, nW, rH, rW]
+        probs_unfold = probs.unfold(2, region_size, stride).unfold(3, region_size, stride)
+
+        if stride == 1:
+            # 每像素模式：用中心的 probs（即原始位置对应的 probs）
+            pad = region_size // 2
+            region_probs = probs[:, :, pad:pad+nH, pad:pad+nW]  # [B, N, nH, nW]
+        else:
+            # 窗口模式：只用中心 stride x stride 区域的 probs 取平均
+            # 因为边缘部分会被相邻窗口覆盖，每个窗口只"负责"中心 stride x stride 区域
+            pad = region_size // 2
+            half_stride = stride // 2
+            # 从 probs_unfold [B, N, nH, nW, rH, rW] 中提取中心 stride x stride
+            center_start = pad - half_stride
+            center_end = center_start + stride
+            region_probs = probs_unfold[:, :, :, :, center_start:center_end, center_start:center_end].mean(dim=(4, 5))  # [B, N, nH, nW]
+
+        # 扩展 probs: [B, N, nH, nW] -> [B, N, 1, nH, nW, 1, 1]
+        region_probs = region_probs[:, :, None, :, :, None, None]
+
+        # 加权求和: [B, N, C, nH, nW, rH, rW] * [B, N, 1, nH, nW, 1, 1] -> [B, C, nH, nW, rH, rW]
+        weighted = (pred_unfold * region_probs).sum(dim=1)
+
+        # 计算 MSE loss
+        loss = F.mse_loss(weighted, target_unfold, reduction='mean')
+
+        return loss
+
     def forward(
         self,
         images: torch.Tensor,
@@ -388,14 +461,18 @@ class SD3GenerativeModel(nn.Module):
         # Move output back and convert to float32
         pred_velocity = pred_velocity.to(device, dtype=torch.float32)
 
-        # Compute weighted velocity using the probs
-        # pred_velocity: [B*N, C, H, W] -> [B, N, C, H, W]
-        # probs: [B, N, H, W]
-        # weighted_pred: [B, C, H, W]
-        weighted_pred = self.compute_weighted_velocity(pred_velocity, probs)
-
-        # Compute MSE loss
-        loss = F.mse_loss(weighted_pred, target)
+        # Compute loss
+        if self.region_size > 1:
+            # 使用区域加权 loss
+            loss = self.compute_regional_weighted_loss(
+                pred_velocity, probs, target,
+                region_size=self.region_size,
+                stride=self.region_stride,
+            )
+        else:
+            # 原始逐像素加权
+            weighted_pred = self.compute_weighted_velocity(pred_velocity, probs)
+            loss = F.mse_loss(weighted_pred, target)
 
         return loss
 

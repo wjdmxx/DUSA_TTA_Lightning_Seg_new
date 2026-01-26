@@ -33,6 +33,11 @@ loss:
   classes_threshold: 20      # Max unique classes
   temperature: 1.0           # Softmax temperature
 
+# Region-weighted loss configuration
+region_loss:
+  size: 7                    # 区域大小，奇数（如 7），1 表示不使用区域加权
+  stride: 1                  # 滑动步长，1 为每像素独立区域，>1 为窗口滑动
+
 # Timestep sampling range for flow matching
 timestep_range: [0.25, 0.25]
 
