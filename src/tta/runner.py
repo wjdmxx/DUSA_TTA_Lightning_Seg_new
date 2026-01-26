@@ -64,6 +64,8 @@ class TTARunner:
         self.experiment_name = config.get("experiment", {}).get("name", "sd3_tta")
         self.experiment_id = config.get("experiment", {}).get("id", 1)
 
+        self.short_edge_size = config.get("data", {}).get("preprocess", {}).get("short_edge_size", 512)
+
         # Global step counter
         self.global_step = 0
 
@@ -200,7 +202,7 @@ class TTARunner:
             data_root=self.data_root,
             corruption=corruption,
             severity=self.severity,
-            short_edge_size=512,
+            short_edge_size=self.short_edge_size,
         )
 
         dataloader = create_dataloader(

@@ -11,7 +11,7 @@ defaults:
 
 # Experiment identification
 experiment:
-  name: sd3_tta_1e-5
+  name: hf_new_try_shift_and_mask_no_scale_again
   id: 1  # Change this for different runs to avoid overwriting W&B runs
 
 # Device configuration
