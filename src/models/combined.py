@@ -99,18 +99,22 @@ class CombinedModel(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Forward pass through the model.
 
+        Each model handles its own resize internally.
+
         Args:
             images: Input tensor [B, C, H, W] with values in [0, 1]
+                    at original resolution
 
         Returns:
             Tuple of:
-            - logits: [B, num_classes, H/4, W/4] segmentation logits
+            - logits: [B, num_classes, H_d/4, W_d/4] segmentation logits
+                      (at disc model's resized resolution / output_stride)
             - loss: Generative loss (None if forward_mode is "discriminative_only")
         """
-        # Get segmentation logits
+        # Discriminative model (internally resizes to disc short_edge_size)
         logits = self.discriminative(images)
 
-        # Compute generative loss if in TTA mode
+        # Generative loss (internally resizes images and logits to gen resolution)
         loss = None
         if self.forward_mode == "tta" and self.generative is not None:
             normed_logits = F.normalize(logits, p=2, dim=1)

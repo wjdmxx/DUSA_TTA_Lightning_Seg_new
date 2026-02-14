@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig
+import torchvision.transforms.functional as TF
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,7 @@ class MMSegDiscriminativeModel(nn.Module):
     """MMSegmentation-based SegFormer B5 model for semantic segmentation.
 
     This class wraps OpenMMLab's SegFormer implementation with:
+    - Internal short-edge resize (via torchvision)
     - BGR color space conversion and normalization
     - Compatible interface with the HuggingFace version
     - Local checkpoint loading
@@ -37,6 +39,7 @@ class MMSegDiscriminativeModel(nn.Module):
                 - checkpoint: Path to local checkpoint file
                 - num_classes: Number of output classes (default: 150)
                 - output_stride: Output stride (default: 4)
+                - short_edge_size: Target size for short edge resize (default: 512)
         """
         super().__init__()
 
@@ -46,8 +49,10 @@ class MMSegDiscriminativeModel(nn.Module):
         )
         self.num_classes = config.get("num_classes", 150)
         self.output_stride = config.get("output_stride", 4)
+        self.short_edge_size = config.get("short_edge_size", 512)
 
         logger.info(f"Loading MMSeg SegFormer model from: {self.checkpoint}")
+        logger.info(f"Short edge resize: {self.short_edge_size}")
 
         # Build model using mmsegmentation
         self._build_model()
@@ -156,6 +161,22 @@ class MMSegDiscriminativeModel(nn.Module):
 
         logger.info("Successfully loaded MMSeg checkpoint")
 
+    def _resize_short_edge(self, images: torch.Tensor) -> torch.Tensor:
+        """Resize images so that the short edge equals self.short_edge_size.
+
+        Args:
+            images: Input tensor [B, C, H, W]
+
+        Returns:
+            Resized tensor [B, C, H', W'] maintaining aspect ratio
+        """
+        return TF.resize(
+            images,
+            size=self.short_edge_size,
+            interpolation=TF.InterpolationMode.BILINEAR,
+            antialias=True,
+        )
+
     def preprocess(self, images: torch.Tensor) -> torch.Tensor:
         """Apply MMSeg-style normalization.
 
@@ -165,7 +186,6 @@ class MMSegDiscriminativeModel(nn.Module):
         Returns:
             Normalized tensor in RGB order (MMSeg handles internally)
         """
-        # Normalize using MMSeg mean/std (converted to 0-1 range)
         return (images - self._mean) / self._std
 
     def forward(
@@ -175,13 +195,19 @@ class MMSegDiscriminativeModel(nn.Module):
     ) -> torch.Tensor:
         """Forward pass through the model.
 
+        Internally resizes images (short edge) then normalizes.
+
         Args:
             images: Input tensor [B, C, H, W] with values in [0, 1], RGB order
+                    at original resolution (no pre-resize needed)
             return_features: If True, also return intermediate features
 
         Returns:
-            logits: Output logits [B, num_classes, H/4, W/4]
+            logits: Output logits [B, num_classes, H'/4, W'/4]
         """
+        # Short-edge resize
+        images = self._resize_short_edge(images)
+
         # Normalize images
         normalized = self.preprocess(images)
 
@@ -189,7 +215,6 @@ class MMSegDiscriminativeModel(nn.Module):
         features = self.backbone(normalized)
 
         # Forward through decode head
-        # SegformerHead expects a list/tuple of features
         logits = self.decode_head(features)
 
         if return_features:

@@ -13,6 +13,9 @@ num_classes: 150
 # Output stride (logits are H/4, W/4)
 output_stride: 4
 
+# Short edge resize (applied internally before forward)
+short_edge_size: 512
+
 # Preprocessing
 preprocess:
   # ImageNet normalization (applied internally)

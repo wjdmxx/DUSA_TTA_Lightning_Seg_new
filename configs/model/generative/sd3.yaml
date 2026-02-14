@@ -22,10 +22,14 @@ transformer:
 preprocess:
   normalize_range: [-1, 1]
 
-# Sliding window configuration
+# Short edge resize (independent from discriminative model)
+short_edge_size: 512
+
+# 2D sliding window configuration
+# Slides in both H and W directions like a convolution kernel
 sliding_window:
-  size: 512      # Window size (matches short edge)
-  stride: 171    # Stride between windows
+  size: 512      # Window size (square)
+  stride: 512    # Stride for both H and W directions
 
 # Loss configuration
 loss:

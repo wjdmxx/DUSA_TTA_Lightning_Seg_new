@@ -27,7 +27,3 @@ corruptions:
 
 # Corruption severity (1-5, 5 is most severe)
 severity: 5
-
-# Image preprocessing
-preprocess:
-  short_edge_size: 512  # Scale short edge to this size
