@@ -52,13 +52,12 @@ python -m src.main
 python -m src.main experiment=baseline
 ```
 
-
-# ADE20K-C + ADE20K 预训练 SegFormer (默认)
-python -m src.main data=ade20k_c model/discriminative=segformer_b5
-# Cityscapes-C + Cityscapes 预训练 SegFormer
-python -m src.main data=cityscapes_c model/discriminative=segformer_b5_cityscapes
-# ACDC + Cityscapes 预训练 SegFormer (ACDC 也用 19 类)
-python -m src.main data=acdc model/discriminative=segformer_b5_cityscapes
+# ADE20K-C
+python -m src.main --config-name config_ade20k_c
+# Cityscapes-C
+python -m src.main --config-name config_cityscapes_c
+# ACDC
+python -m src.main --config-name config_acdc
 
 ### Multi-GPU Usage
 
