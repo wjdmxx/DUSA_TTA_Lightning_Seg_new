@@ -1,7 +1,7 @@
 # ADE20K-C Dataset Configuration
 
 # Data root directory
-root: /mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data/
+root: /home/qingju/data/liyuanxi/projects/DUSA_TTA_Lightning_Seg_new/data/ADE20K-C/
 
 # Dataset info
 dataset: ADE20K-C

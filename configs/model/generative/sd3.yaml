@@ -29,7 +29,7 @@ short_edge_size: 512
 # Slides in both H and W directions like a convolution kernel
 sliding_window:
   size: 512      # Window size (square)
-  stride: 512    # Stride for both H and W directions
+  stride: 171    # Stride for both H and W directions
 
 # Loss configuration
 loss:
