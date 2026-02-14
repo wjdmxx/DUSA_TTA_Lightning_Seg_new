@@ -1,7 +1,7 @@
 # Cityscapes-C Dataset Configuration
 
 # Data root directory (should contain Cityscapes-C/ and gtFine/ subdirectories)
-root: /mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data/
+root: /home/qingju/data/liyuanxi/projects/DUSA_TTA_Lightning_Seg_new/data/Cityscapes-C/
 
 # Dataset info
 dataset: Cityscapes-C

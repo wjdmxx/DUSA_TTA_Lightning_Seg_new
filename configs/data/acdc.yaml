@@ -1,7 +1,7 @@
 # ACDC Dataset Configuration
 
 # Data root directory (should contain rgb_anon/ and gt/ subdirectories)
-root: /mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data/ACDC/
+root: /home/qingju/data/liyuanxi/projects/DUSA_TTA_Lightning_Seg_new/data/ACDC/
 
 # Dataset info
 dataset: ACDC
