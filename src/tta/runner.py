@@ -11,6 +11,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from ..data.dataset import ADE20KCorruptedDataset, create_dataloader
+from ..data.cityscapes_c_dataset import CityscapesCCorruptedDataset
+from ..data.acdc_dataset import ACDCDataset
 from ..metrics.segmentation import SegmentationMetrics
 from ..models.combined import CombinedModel
 from ..utils.categories import ADE20K_CORRUPTIONS
@@ -44,7 +46,8 @@ class TTARunner:
         # Gradient accumulation settings
         self.accumulation_steps = config.get("tta", {}).get("accumulation_steps", 1)
 
-        # Corruption settings
+        # Corruption / condition settings
+        self.dataset_name = config.get("data", {}).get("dataset", "ADE20K-C")
         self.corruptions = config.get("data", {}).get(
             "corruptions", list(ADE20K_CORRUPTIONS)
         )
@@ -202,12 +205,8 @@ class TTARunner:
         Returns:
             Dictionary of metrics for this task
         """
-        # Create dataset and dataloader
-        dataset = ADE20KCorruptedDataset(
-            data_root=self.data_root,
-            corruption=corruption,
-            severity=self.severity,
-        )
+        # Create dataset based on config
+        dataset = self._create_dataset(corruption)
 
         dataloader = create_dataloader(
             dataset,
@@ -303,6 +302,36 @@ class TTARunner:
 
         # Return current metrics
         return self.metrics.compute()
+
+    def _create_dataset(self, task_name: str):
+        """Create the appropriate dataset based on config.
+
+        Args:
+            task_name: Corruption type (ADE20K-C, Cityscapes-C) or
+                       condition name (ACDC)
+
+        Returns:
+            Dataset instance
+        """
+        if self.dataset_name == "ADE20K-C":
+            return ADE20KCorruptedDataset(
+                data_root=self.data_root,
+                corruption=task_name,
+                severity=self.severity,
+            )
+        elif self.dataset_name == "Cityscapes-C":
+            return CityscapesCCorruptedDataset(
+                data_root=self.data_root,
+                corruption=task_name,
+                severity=self.severity,
+            )
+        elif self.dataset_name == "ACDC":
+            return ACDCDataset(
+                data_root=self.data_root,
+                condition=task_name,
+            )
+        else:
+            raise ValueError(f"Unknown dataset: {self.dataset_name}")
 
     def _compute_summary(
         self,

@@ -58,6 +58,12 @@ class CombinedModel(nn.Module):
         self.generative: Optional[SD3GenerativeModel] = None
         if self.forward_mode == "tta":
             gen_config = config.get("model", {}).get("generative", {})
+            # Pass dataset name to generative model so text embeddings can use
+            # the correct category list (ADE20K 150 vs Cityscapes 19)
+            dataset_name = config.get("data", {}).get("dataset", "ADE20K-C")
+            if "text_embedding" not in gen_config:
+                gen_config["text_embedding"] = {}
+            gen_config["text_embedding"]["dataset"] = dataset_name
             self.generative = SD3GenerativeModel(gen_config)
 
         # Store initial state for reset

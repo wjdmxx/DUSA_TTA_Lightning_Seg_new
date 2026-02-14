@@ -51,6 +51,12 @@ python -m src.main
 # Run baseline (discriminative only, no TTA)
 python -m src.main experiment=baseline
 ```
+# ADE20K-C (默认)
+python -m src.main data=ade20k_c
+# Cityscapes-C
+python -m src.main data=cityscapes_c
+# ACDC
+python -m src.main data=acdc
 
 ### Multi-GPU Usage
 

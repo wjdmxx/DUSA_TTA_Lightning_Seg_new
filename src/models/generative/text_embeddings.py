@@ -9,7 +9,7 @@ import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from ...utils.categories import ADE20K_CATEGORIES
+from ...utils.categories import ADE20K_CATEGORIES, CITYSCAPES_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,15 @@ class TextEmbeddingManager:
         """
         self.prompt_template = config.get("prompt_template", "a photo of a {}")
         self.cache_dir = Path(config.get("cache_dir", "./embeddings_cache"))
-        self.class_names = list(ADE20K_CATEGORIES)
+
+        # Determine class names: explicit list > dataset name > ADE20K default
+        if "categories_list" in config:
+            self.class_names = list(config.categories_list)
+        elif config.get("dataset", "ade20k").lower() in ("cityscapes", "cityscapes-c", "acdc"):
+            self.class_names = list(CITYSCAPES_CATEGORIES)
+        else:
+            self.class_names = list(ADE20K_CATEGORIES)
+
         self.pipe = pipe
 
         # Ensure cache directory exists
