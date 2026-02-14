@@ -44,7 +44,13 @@ def print_config(config: DictConfig) -> None:
     print(f"Continual: {config.tta.continual}")
     print(f"Precision: {config.device.precision}")
     print(f"Data Root: {config.data.root}")
-    print(f"Corruptions: {len(config.data.corruptions)} types, severity {config.data.severity}")
+    dataset = config.data.get("dataset", "ADE20K-C")
+    tasks = config.data.corruptions
+    severity = config.data.get("severity", None)
+    if severity is not None:
+        print(f"Tasks: {len(tasks)} corruptions, severity {severity}")
+    else:
+        print(f"Tasks: {len(tasks)} conditions")
     print("=" * 60 + "\n")
 
 

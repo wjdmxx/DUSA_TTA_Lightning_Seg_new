@@ -46,12 +46,12 @@ class TTARunner:
         # Gradient accumulation settings
         self.accumulation_steps = config.get("tta", {}).get("accumulation_steps", 1)
 
-        # Corruption / condition settings
+        # Task settings (corruptions for -C datasets, conditions for ACDC)
         self.dataset_name = config.get("data", {}).get("dataset", "ADE20K-C")
-        self.corruptions = config.get("data", {}).get(
+        self.tasks = list(config.get("data", {}).get(
             "corruptions", list(ADE20K_CORRUPTIONS)
-        )
-        self.severity = config.get("data", {}).get("severity", 5)
+        ))
+        self.severity = config.get("data", {}).get("severity", None)
 
         # Data settings
         self.data_root = config.get("data", {}).get("root", "./data")
@@ -160,9 +160,9 @@ class TTARunner:
         """
         all_results = {}
 
-        for corruption in self.corruptions:
+        for task_name in self.tasks:
             logger.info(f"\n{'='*50}")
-            logger.info(f"Processing corruption: {corruption}")
+            logger.info(f"Processing task: {task_name}")
             logger.info(f"{'='*50}")
 
             # Reset model if not continual
@@ -171,15 +171,15 @@ class TTARunner:
                 if self.optimizer is not None:
                     self._setup_optimizer()  # Rebuild optimizer with fresh params
 
-            # Run TTA on this corruption
-            result = self.run_task(corruption)
-            all_results[corruption] = result
+            # Run TTA on this task
+            result = self.run_task(task_name)
+            all_results[task_name] = result
 
             # Log to W&B
             if self.wandb_logger is not None:
                 self.wandb_logger.log_task_metrics(
                     result,
-                    task_name=corruption,
+                    task_name=task_name,
                     step=self.global_step,
                 )
 
@@ -191,9 +191,9 @@ class TTARunner:
             logger.info(f"  {metric}: {value:.4f}")
 
         # Print copy-friendly one-line mIoU summary (task order)
-        miou_values = [all_results[c]["mIoU"] for c in self.corruptions]
+        miou_values = [all_results[t]["mIoU"] for t in self.tasks]
         avg_miou = sum(miou_values) / len(miou_values) if miou_values else 0.0
-        header_line = "\t".join(self.corruptions) + "\tAvg"
+        header_line = "\t".join(self.tasks) + "\tAvg"
         value_line = "\t".join(f"{v:.4f}" for v in miou_values) + f"\t{avg_miou:.4f}"
         logger.info(f"\n{'='*50}")
         logger.info("mIoU (copy-friendly):")
@@ -206,17 +206,17 @@ class TTARunner:
 
         return summary
 
-    def run_task(self, corruption: str) -> Dict[str, float]:
-        """Run TTA on a single corruption type.
+    def run_task(self, task_name: str) -> Dict[str, float]:
+        """Run TTA on a single task (corruption or condition).
 
         Args:
-            corruption: Corruption type name
+            task_name: Corruption type or condition name
 
         Returns:
             Dictionary of metrics for this task
         """
         # Create dataset based on config
-        dataset = self._create_dataset(corruption)
+        dataset = self._create_dataset(task_name)
 
         dataloader = create_dataloader(
             dataset,
@@ -234,7 +234,7 @@ class TTARunner:
             self.optimizer.zero_grad()
 
         # Process samples
-        pbar = tqdm(dataloader, desc=f"TTA-{corruption}")
+        pbar = tqdm(dataloader, desc=f"TTA-{task_name}")
         for batch in pbar:
             metrics = self._tta_step(batch)
             self.global_step += 1
@@ -251,12 +251,12 @@ class TTARunner:
                     self.wandb_logger.log(
                         metrics,
                         step=self.global_step,
-                        prefix=f"{corruption}",
+                        prefix=f"{task_name}",
                     )
 
         # Compute final metrics
         final_metrics = self.metrics.compute()
-        logger.info(f"Task {corruption} complete: mIoU={final_metrics['mIoU']:.4f}")
+        logger.info(f"Task {task_name} complete: mIoU={final_metrics['mIoU']:.4f}")
 
         return final_metrics
 
