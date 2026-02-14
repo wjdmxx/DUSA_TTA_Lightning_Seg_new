@@ -61,9 +61,8 @@ class CombinedModel(nn.Module):
             # Pass dataset name to generative model so text embeddings can use
             # the correct category list (ADE20K 150 vs Cityscapes 19)
             dataset_name = config.get("data", {}).get("dataset", "ADE20K-C")
-            if "text_embedding" not in gen_config:
-                gen_config["text_embedding"] = {}
-            gen_config["text_embedding"]["dataset"] = dataset_name
+            from omegaconf import OmegaConf
+            OmegaConf.update(gen_config, "text_embedding.dataset", dataset_name, force_add=True)
             self.generative = SD3GenerativeModel(gen_config)
 
         # Store initial state for reset
