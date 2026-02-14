@@ -1,0 +1,30 @@
+# ADE20K-C Configuration
+# Usage: python -m src.main --config-name config_ade20k_c
+
+defaults:
+  - model/discriminative: segformer_b5
+  - model/generative: sd3
+  - data: ade20k_c
+  - tta: default
+  - logging: wandb
+  - _self_
+
+# Experiment identification
+experiment:
+  name: ade20k_c_tta
+  id: 1
+
+# Device configuration
+device:
+  precision: bf16
+
+# Output directory
+output_dir: ./outputs/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ${output_dir}
+  sweep:
+    dir: ${output_dir}
+    subdir: ${hydra.job.num}

@@ -1,0 +1,30 @@
+# Cityscapes-C Configuration
+# Usage: python -m src.main --config-name config_cityscapes_c
+
+defaults:
+  - model/discriminative: segformer_b5_cityscapes_c
+  - model/generative: sd3_cityscapes_c
+  - data: cityscapes_c
+  - tta: default
+  - logging: wandb
+  - _self_
+
+# Experiment identification
+experiment:
+  name: cityscapes_c_tta
+  id: 1
+
+# Device configuration
+device:
+  precision: bf16
+
+# Output directory
+output_dir: ./outputs/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ${output_dir}
+  sweep:
+    dir: ${output_dir}
+    subdir: ${hydra.job.num}
