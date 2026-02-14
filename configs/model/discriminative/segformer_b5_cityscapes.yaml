@@ -1,0 +1,23 @@
+# SegFormer B5 Model Configuration
+# Pre-trained on Cityscapes
+
+# Model type: "huggingface" (default) or "mmseg"
+type: huggingface
+
+# HuggingFace model path
+model_name: nvidia/segformer-b5-finetuned-cityscapes-1024-1024
+
+# Number of output classes
+num_classes: 19
+
+# Output stride (logits are H/4, W/4)
+output_stride: 4
+
+# Short edge resize (applied internally before forward)
+short_edge_size: 512
+
+# Preprocessing
+preprocess:
+  # ImageNet normalization (applied internally)
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]

@@ -51,12 +51,14 @@ python -m src.main
 # Run baseline (discriminative only, no TTA)
 python -m src.main experiment=baseline
 ```
-# ADE20K-C (默认)
-python -m src.main data=ade20k_c
-# Cityscapes-C
-python -m src.main data=cityscapes_c
-# ACDC
-python -m src.main data=acdc
+
+
+# ADE20K-C + ADE20K 预训练 SegFormer (默认)
+python -m src.main data=ade20k_c model/discriminative=segformer_b5
+# Cityscapes-C + Cityscapes 预训练 SegFormer
+python -m src.main data=cityscapes_c model/discriminative=segformer_b5_cityscapes
+# ACDC + Cityscapes 预训练 SegFormer (ACDC 也用 19 类)
+python -m src.main data=acdc model/discriminative=segformer_b5_cityscapes
 
 ### Multi-GPU Usage
 
