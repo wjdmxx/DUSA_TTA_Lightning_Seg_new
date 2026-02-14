@@ -190,6 +190,16 @@ class TTARunner:
         for metric, value in summary.items():
             logger.info(f"  {metric}: {value:.4f}")
 
+        # Print copy-friendly one-line mIoU summary (task order)
+        miou_values = [all_results[c]["mIoU"] for c in self.corruptions]
+        avg_miou = sum(miou_values) / len(miou_values) if miou_values else 0.0
+        header_line = "\t".join(self.corruptions) + "\tAvg"
+        value_line = "\t".join(f"{v:.4f}" for v in miou_values) + f"\t{avg_miou:.4f}"
+        logger.info(f"\n{'='*50}")
+        logger.info("mIoU (copy-friendly):")
+        logger.info(header_line)
+        logger.info(value_line)
+
         if self.wandb_logger is not None:
             self.wandb_logger.log_summary(summary)
             self.wandb_logger.finish()
