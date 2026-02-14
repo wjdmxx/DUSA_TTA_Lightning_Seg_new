@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig
 from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
+import torchvision.transforms.functional as TF
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ class DiscriminativeModel(nn.Module):
     """SegFormer-based discriminative model for semantic segmentation.
 
     This class wraps HuggingFace's SegformerForSemanticSegmentation with:
+    - Internal short-edge resize (via torchvision)
     - ImageNet normalization preprocessing
     - Logits output at 4x downsampled resolution
     - Optional resizing to original resolution
@@ -35,14 +37,17 @@ class DiscriminativeModel(nn.Module):
             config: Model configuration containing:
                 - model_name: HuggingFace model name/path
                 - num_classes: Number of output classes (default: 150)
+                - short_edge_size: Target size for short edge resize (default: 512)
         """
         super().__init__()
 
         model_name = config.get("model_name", "nvidia/segformer-b5-finetuned-ade-640-640")
         self.num_classes = config.get("num_classes", 150)
         self.output_stride = config.get("output_stride", 4)
+        self.short_edge_size = config.get("short_edge_size", 512)
 
         logger.info(f"Loading SegFormer model: {model_name}")
+        logger.info(f"Short edge resize: {self.short_edge_size}")
 
         # Load model
         self.model = SegformerForSemanticSegmentation.from_pretrained(
@@ -63,6 +68,25 @@ class DiscriminativeModel(nn.Module):
 
         logger.info(f"SegFormer loaded with {self.num_classes} classes")
 
+    def _resize_short_edge(self, images: torch.Tensor) -> torch.Tensor:
+        """Resize images so that the short edge equals self.short_edge_size.
+
+        Uses torchvision.transforms.functional.resize which handles
+        short-edge resize when size is a single int.
+
+        Args:
+            images: Input tensor [B, C, H, W]
+
+        Returns:
+            Resized tensor [B, C, H', W'] maintaining aspect ratio
+        """
+        return TF.resize(
+            images,
+            size=self.short_edge_size,  # single int = short edge resize
+            interpolation=TF.InterpolationMode.BILINEAR,
+            antialias=True,
+        )
+
     def preprocess(self, images: torch.Tensor) -> torch.Tensor:
         """Apply ImageNet normalization.
 
@@ -81,13 +105,20 @@ class DiscriminativeModel(nn.Module):
     ) -> torch.Tensor:
         """Forward pass through the model.
 
+        Internally resizes images (short edge) then normalizes.
+
         Args:
             images: Input tensor [B, C, H, W] with values in [0, 1]
+                    at original resolution (no pre-resize needed)
             return_features: If True, also return intermediate features
 
         Returns:
-            logits: Output logits [B, num_classes, H/4, W/4]
+            logits: Output logits [B, num_classes, H'/4, W'/4]
+                    where H', W' are the resized dimensions
         """
+        # Short-edge resize
+        images = self._resize_short_edge(images)
+
         # Normalize images
         normalized = self.preprocess(images)
 

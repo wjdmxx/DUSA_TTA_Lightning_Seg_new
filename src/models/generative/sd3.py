@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from omegaconf import DictConfig
+import torchvision.transforms.functional as TF
 
 from .sliding_window import SlidingWindowProcessor, downsample_logits_to_latent
 from .text_embeddings import TextEmbeddingManager
@@ -62,10 +63,13 @@ class SD3GenerativeModel(nn.Module):
         self.classes_min_num = config.get("loss", {}).get("classes_min_num", 5)
         self.timestep_range = config.get("timestep_range", [0.25, 0.25])
 
-        # Sliding window config
+        # Short edge resize (independent from discriminative model)
+        self.short_edge_size = config.get("short_edge_size", 512)
+
+        # Sliding window config (2D)
         sw_config = config.get("sliding_window", {})
         self.window_size = sw_config.get("size", 512)
-        self.stride = sw_config.get("stride", 171)
+        self.stride = sw_config.get("stride", 512)
 
         # Device config
         self.vae_device = config.get("vae", {}).get("device", "cuda:0")
@@ -135,6 +139,24 @@ class SD3GenerativeModel(nn.Module):
         torch.cuda.empty_cache()
 
         logger.info("SD3 model setup complete")
+
+    def _resize_short_edge(self, images: torch.Tensor) -> torch.Tensor:
+        """Resize images so that the short edge equals self.short_edge_size.
+
+        Uses torchvision.transforms.functional.resize.
+
+        Args:
+            images: Input tensor [B, C, H, W]
+
+        Returns:
+            Resized tensor [B, C, H', W'] maintaining aspect ratio
+        """
+        return TF.resize(
+            images,
+            size=self.short_edge_size,
+            interpolation=TF.InterpolationMode.BILINEAR,
+            antialias=True,
+        )
 
     def preprocess_images(self, images: torch.Tensor) -> torch.Tensor:
         """Preprocess images for SD3 VAE.
@@ -305,32 +327,45 @@ class SD3GenerativeModel(nn.Module):
     ) -> torch.Tensor:
         """Forward pass computing TTA loss.
 
+        Internally resizes images to gen resolution, resizes disc logits
+        to match, applies 2D sliding window, and computes loss per window.
+
         Args:
-            images: [B, C, H, W] input images (values in [0, 1])
-            logits: [B, num_classes, H/4, W/4] segmentation logits
+            images: [B, C, H, W] input images at original resolution (values in [0, 1])
+            logits: [B, num_classes, H_d/4, W_d/4] segmentation logits from disc model
 
         Returns:
             loss: Scalar loss for backpropagation
         """
         B = images.shape[0]
         device = images.device
-        # Apply sliding window
-        image_windows, logit_windows, num_windows = self.sliding_window.slide_batch(
-            images, logits, logits_scale=4
+
+        # 1. Resize images to generative model resolution (short edge)
+        gen_images = self._resize_short_edge(images)  # [B, 3, H_g, W_g]
+
+        # 2. Resize disc logits to match gen image spatial dims
+        gen_h, gen_w = gen_images.shape[2], gen_images.shape[3]
+        logits_resized = F.interpolate(
+            logits,
+            size=(gen_h, gen_w),
+            mode="bilinear",
+            align_corners=False,
+        )  # [B, C_cls, H_g, W_g]
+
+        # 3. Apply 2D sliding window to both images and logits
+        image_windows, logit_windows, positions = self.sliding_window.slide_pair(
+            gen_images, logits_resized
         )
+        num_windows = len(positions)
 
         total_loss = 0.0
 
-        # Process each window
+        # 4. Process each window
         for win_idx in range(num_windows):
-            # Get window data
             win_images = image_windows[win_idx * B : (win_idx + 1) * B]
             win_logits = logit_windows[win_idx * B : (win_idx + 1) * B]
 
-            # Compute loss for this window
             win_loss = self._compute_window_loss(win_images, win_logits)
-
-            # Accumulate loss (averaged over windows)
             total_loss = total_loss + win_loss / num_windows
 
         return total_loss
@@ -343,8 +378,8 @@ class SD3GenerativeModel(nn.Module):
         """Compute loss for a single window.
 
         Args:
-            images: [B, C, H, W] window images
-            logits: [B, num_classes, H/4, W/4] window logits
+            images: [B, 3, S, S] window images (S = window_size)
+            logits: [B, num_classes, S, S] window logits (same spatial size as images)
 
         Returns:
             Loss tensor
@@ -352,14 +387,14 @@ class SD3GenerativeModel(nn.Module):
         B = images.shape[0]
         device = images.device
 
-        # Preprocess images for VAE
+        # Preprocess images for VAE: [0,1] -> [-1,1]
         images_preprocessed = self.preprocess_images(images)
 
-        # Encode to latent space
+        # Encode to latent space: [B, 16, S/8, S/8]
         latent = self.encode_to_latent(images_preprocessed)
         latent_h, latent_w = latent.shape[2], latent.shape[3]
 
-        # Downsample logits to latent resolution
+        # Downsample logits to latent resolution: [B, C, S/8, S/8]
         logits_downsampled = downsample_logits_to_latent(logits, (latent_h, latent_w))
 
         # Select N unique classes and compute softmax probabilities over them

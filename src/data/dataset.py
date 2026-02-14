@@ -37,8 +37,6 @@ class ADE20KCorruptedDataset(Dataset):
         data_root: str,
         corruption: str,
         severity: int = 5,
-        short_edge_size: int = 512,
-        return_original_size: bool = True,
     ):
         """Initialize the dataset.
 
@@ -46,14 +44,10 @@ class ADE20KCorruptedDataset(Dataset):
             data_root: Root directory containing the dataset
             corruption: Corruption type (e.g., 'gaussian_noise', 'fog')
             severity: Corruption severity level (1-5)
-            short_edge_size: Target size for short edge resize
-            return_original_size: Whether to return original image size
         """
         self.data_root = Path(data_root)
         self.corruption = corruption
         self.severity = severity
-        self.short_edge_size = short_edge_size
-        self.return_original_size = return_original_size
 
         # Validate corruption type
         if corruption not in self.CORRUPTIONS:
@@ -111,13 +105,16 @@ class ADE20KCorruptedDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """Get a sample.
 
+        Returns original-size image and mask without any resize.
+        Resize is handled by each model internally.
+
         Args:
             idx: Sample index
 
         Returns:
             Dictionary containing:
-                - image: [C, H, W] tensor, values in [0, 1]
-                - mask: [H, W] tensor, class indices
+                - image: [C, H, W] tensor, values in [0, 1], original size
+                - mask: [H, W] tensor, class indices, original size
                 - meta: Metadata dict with filename, original_size, etc.
         """
         img_path, ann_path = self.image_files[idx]
@@ -127,27 +124,19 @@ class ADE20KCorruptedDataset(Dataset):
         original_size = image.size  # (W, H)
 
         # Load annotation
-        # ADE20K annotations are 0-indexed, with 0 being the first class
-        # We need to handle the ignore regions (if any)
         mask = Image.open(ann_path)
 
-        # Convert to tensors
+        # Convert to tensors (no resize)
         image_tensor = torch.from_numpy(
-            # HWC -> CHW, uint8 -> float32, [0, 255] -> [0, 1]
-            (np.array(Image.open(img_path).convert("RGB")) / 255.0).astype("float32")
-        ).permute(2, 0, 1)
+            (np.array(image) / 255.0).astype("float32")
+        ).permute(2, 0, 1)  # HWC -> CHW, [0,255] -> [0,1]
 
         mask_tensor = torch.from_numpy(np.array(mask).astype("int64"))
 
         # ADE20K mask values: 0 = background/ignore, 1-150 = classes
         # Convert to 0-indexed: subtract 1, set background to ignore_index (255)
-        # Note: Some implementations keep 0 as first class and use 255 for ignore
-        # We follow the convention where mask values 1-150 map to classes 0-149
         mask_tensor = mask_tensor - 1
         mask_tensor[mask_tensor == -1] = 255  # Background/ignore
-
-        # Resize short edge to target size
-        image_tensor, mask_tensor = self._resize_short_edge(image_tensor, mask_tensor)
 
         return {
             "image": image_tensor,
@@ -159,49 +148,6 @@ class ADE20KCorruptedDataset(Dataset):
                 "severity": self.severity,
             },
         }
-
-    def _resize_short_edge(
-        self,
-        image: torch.Tensor,
-        mask: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Resize image and mask by scaling short edge.
-
-        Args:
-            image: [C, H, W] tensor
-            mask: [H, W] tensor
-
-        Returns:
-            Tuple of resized (image, mask)
-        """
-        C, H, W = image.shape
-
-        # Calculate new dimensions
-        if H < W:
-            # Height is short edge
-            new_h = self.short_edge_size
-            new_w = int(W * self.short_edge_size / H)
-        else:
-            # Width is short edge
-            new_w = self.short_edge_size
-            new_h = int(H * self.short_edge_size / W)
-
-        # Resize image with bilinear interpolation
-        image = torch.nn.functional.interpolate(
-            image.unsqueeze(0),
-            size=(new_h, new_w),
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
-
-        # Resize mask with nearest neighbor
-        # mask = torch.nn.functional.interpolate(
-        #     mask.unsqueeze(0).unsqueeze(0).float(),
-        #     size=(new_h, new_w),
-        #     mode="nearest",
-        # ).squeeze(0).squeeze(0).long()
-
-        return image, mask
 
 
 def create_dataloader(
