@@ -1,0 +1,17 @@
+# ACDC Dataset Configuration
+
+# Data root directory (should contain rgb_anon/ and gt/ subdirectories)
+root: /mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data/ACDC/
+
+# Dataset info
+dataset: ACDC
+num_classes: 19
+
+# Adverse conditions to evaluate (ACDC uses "conditions" instead of "corruptions")
+# These are listed under "corruptions" key for compatibility with the runner's
+# iteration loop, which iterates over cfg.data.corruptions
+corruptions:
+  - fog
+  - night
+  - rain
+  - snow

@@ -1,0 +1,29 @@
+# Cityscapes-C Dataset Configuration
+
+# Data root directory (should contain Cityscapes-C/ and gtFine/ subdirectories)
+root: /mnt/bit/liyuanxi/projects/DUSA_flow/segmentation/data/
+
+# Dataset info
+dataset: Cityscapes-C
+num_classes: 19
+
+# Corruption types to evaluate
+corruptions:
+  - gaussian_noise
+  - shot_noise
+  - impulse_noise
+  - defocus_blur
+  - glass_blur
+  - motion_blur
+  - zoom_blur
+  - snow
+  - frost
+  - fog
+  - brightness
+  - contrast
+  - elastic_transform
+  - pixelate
+  - jpeg_compression
+
+# Corruption severity (1-5, 5 is most severe)
+severity: 5
