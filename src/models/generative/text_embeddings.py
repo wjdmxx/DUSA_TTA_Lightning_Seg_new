@@ -39,10 +39,13 @@ class TextEmbeddingManager:
         self.prompt_template = config.get("prompt_template", "a photo of a {}")
         self.cache_dir = Path(config.get("cache_dir", "./embeddings_cache"))
 
+        # Determine dataset name for cache differentiation
+        self.dataset_name = config.get("dataset", "ade20k").lower()
+
         # Determine class names: explicit list > dataset name > ADE20K default
         if "categories_list" in config:
             self.class_names = list(config.categories_list)
-        elif config.get("dataset", "ade20k").lower() in ("cityscapes", "cityscapes-c", "acdc"):
+        elif self.dataset_name in ("cityscapes", "cityscapes-c", "acdc"):
             self.class_names = list(CITYSCAPES_CATEGORIES)
         else:
             self.class_names = list(ADE20K_CATEGORIES)
@@ -57,16 +60,23 @@ class TextEmbeddingManager:
         self._pooled_embeddings: Optional[torch.Tensor] = None
 
     def _get_cache_path(self) -> Path:
-        """Generate cache file path based on prompt template.
+        """Generate cache file path based on dataset and prompt template.
 
         Returns:
             Path to cache file
         """
         # Create hash of prompt template for unique filename
+        hash_input = f"{self.dataset_name}_{self.prompt_template}"
         prompt_hash = hashlib.md5(
-            self.prompt_template.encode()
+            hash_input.encode()
         ).hexdigest()[:8]
-        return self.cache_dir / f"ade20k_embeddings_{prompt_hash}.pt"
+        # Use dataset-aware filename to avoid cache collisions between
+        # ADE20K (150 classes) and Cityscapes/ACDC (19 classes)
+        if self.dataset_name in ("cityscapes", "cityscapes-c", "acdc"):
+            prefix = "cityscapes"
+        else:
+            prefix = "ade20k"
+        return self.cache_dir / f"{prefix}_embeddings_{prompt_hash}.pt"
 
     def get_embeddings(
         self,
