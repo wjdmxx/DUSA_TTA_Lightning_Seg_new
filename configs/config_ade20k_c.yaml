@@ -11,7 +11,7 @@ defaults:
 
 # Experiment identification
 experiment:
-  name: ade20k_c_tta
+  name: ade20k_c_first_try
   id: 1
 
 # Device configuration

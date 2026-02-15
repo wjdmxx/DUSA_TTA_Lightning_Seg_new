@@ -11,7 +11,7 @@ defaults:
 
 # Experiment identification
 experiment:
-  name: acdc_tta_first
+  name: acdc_tta_1e-5_new
   id: 1
 
 # Device configuration

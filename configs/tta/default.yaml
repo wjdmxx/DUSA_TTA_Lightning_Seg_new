@@ -4,6 +4,7 @@
 # - "tta": Full TTA with generative model
 # - "discriminative_only": Only run discriminative model (baseline)
 forward_mode: tta
+# forward_mode: discriminative_only
 
 # Continual mode
 # - true: Don't reset model between corruptions (continual adaptation)
