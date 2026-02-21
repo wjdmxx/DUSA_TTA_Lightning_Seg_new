@@ -185,20 +185,19 @@ class TTARunner:
 
         # Compute and log summary
         summary = self._compute_summary(all_results)
-        logger.info(f"\n{'='*50}")
-        logger.info("Final Results Summary:")
-        for metric, value in summary.items():
-            logger.info(f"  {metric}: {value:.4f}")
 
-        # Print copy-friendly one-line mIoU summary (task order)
+        # Prepare mIoU data
         miou_values = [all_results[t]["mIoU"] for t in self.tasks]
         avg_miou = sum(miou_values) / len(miou_values) if miou_values else 0.0
-        header_line = "\t".join(self.tasks) + "\tAvg"
-        value_line = "\t".join(f"{v:.4f}" for v in miou_values) + f"\t{avg_miou:.4f}"
-        logger.info(f"\n{'='*50}")
-        logger.info("mIoU (copy-friendly):")
-        logger.info(header_line)
-        logger.info(value_line)
+        all_names = list(self.tasks) + ["Avg"]
+        all_values = miou_values + [avg_miou]
+
+        # Display with rich table (max 8 columns per row)
+        self._print_results_table(all_names, all_values)
+
+        # Plain one-line for copying (space-separated)
+        copy_line = " ".join(f"{v:.4f}" for v in all_values)
+        print(copy_line)
 
         if self.wandb_logger is not None:
             self.wandb_logger.log_summary(summary)
@@ -342,6 +341,67 @@ class TTARunner:
             )
         else:
             raise ValueError(f"Unknown dataset: {self.dataset_name}")
+
+    def _print_results_table(
+        self,
+        names: List[str],
+        values: List[float],
+        max_cols: int = 8,
+    ) -> None:
+        """Print mIoU results as a rich table, splitting rows if needed.
+
+        Args:
+            names: List of task names (including 'Avg')
+            values: List of mIoU values (including average)
+            max_cols: Maximum number of columns per table row
+        """
+        try:
+            from rich.console import Console
+            from rich.table import Table
+
+            console = Console()
+
+            # Split into chunks of max_cols
+            for chunk_start in range(0, len(names), max_cols):
+                chunk_end = min(chunk_start + max_cols, len(names))
+                chunk_names = names[chunk_start:chunk_end]
+                chunk_values = values[chunk_start:chunk_end]
+
+                table = Table(
+                    title="mIoU Results" if chunk_start == 0 else None,
+                    show_header=True,
+                    header_style="bold magenta",
+                )
+
+                # Add columns
+                for name in chunk_names:
+                    if name == "Avg":
+                        table.add_column(name, justify="center", style="bold cyan")
+                    else:
+                        table.add_column(name, justify="center")
+
+                # Add value row
+                row_cells = []
+                for i, val in enumerate(chunk_values):
+                    cell = f"{val:.4f}"
+                    if chunk_names[i] == "Avg":
+                        cell = f"[bold cyan]{cell}[/bold cyan]"
+                    row_cells.append(cell)
+                table.add_row(*row_cells)
+
+                console.print(table)
+
+        except ImportError:
+            # Fallback: plain text table
+            for chunk_start in range(0, len(names), max_cols):
+                chunk_end = min(chunk_start + max_cols, len(names))
+                chunk_names = names[chunk_start:chunk_end]
+                chunk_values = values[chunk_start:chunk_end]
+                header = " | ".join(f"{n:>14s}" for n in chunk_names)
+                vals = " | ".join(f"{v:>14.4f}" for v in chunk_values)
+                print(header)
+                print(vals)
+
 
     def _compute_summary(
         self,
