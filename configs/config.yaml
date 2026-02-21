@@ -2,7 +2,7 @@
 # Use: python -m src.main
 
 defaults:
-  - model/discriminative: segformer_b5
+  - model/discriminative: segformer_b5_mmseg
   - model/generative: sd3
   - data: ade20k_c
   - tta: default
@@ -11,7 +11,7 @@ defaults:
 
 # Experiment identification
 experiment:
-  name: hf_512_tta_base
+  name: ade20k_mm_dis_only
   id: 1  # Change this for different runs to avoid overwriting W&B runs
 
 # Device configuration

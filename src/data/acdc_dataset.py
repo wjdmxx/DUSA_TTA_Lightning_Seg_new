@@ -62,8 +62,8 @@ class ACDCDataset(Dataset):
             )
 
         # Setup paths
-        self.image_dir = self.data_root / "rgb_anon" / condition / "val"
-        self.gt_dir = self.data_root / "gt" / condition / "val"
+        self.image_dir = self.data_root / "rgb_anon" / condition / "train"
+        self.gt_dir = self.data_root / "gt" / condition / "train"
 
         # Verify directories exist
         if not self.image_dir.exists():

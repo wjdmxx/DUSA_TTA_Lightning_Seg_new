@@ -54,6 +54,7 @@ class DiscriminativeModel(nn.Module):
             model_name,
             num_labels=self.num_classes,
             ignore_mismatched_sizes=True,
+            use_safetensors=True,
         )
 
         # Store mean/std as buffers (not parameters)

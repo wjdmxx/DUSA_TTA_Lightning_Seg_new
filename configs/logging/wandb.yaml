@@ -11,7 +11,7 @@ wandb:
   entity: null
 
   # Logging interval (steps)
-  log_interval: 10
+  log_interval: 1
 
   # Whether to log images
   log_images: false

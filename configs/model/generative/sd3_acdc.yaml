@@ -23,7 +23,7 @@ preprocess:
   normalize_range: [-1, 1]
 
 # Short edge resize (independent from discriminative model)
-short_edge_size: 1024
+short_edge_size: 1080
 
 # 2D sliding window configuration
 # Slides in both H and W directions like a convolution kernel

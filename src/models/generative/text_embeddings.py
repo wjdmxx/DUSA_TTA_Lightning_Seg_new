@@ -46,8 +46,12 @@ class TextEmbeddingManager:
         if "categories_list" in config:
             self.class_names = list(config.categories_list)
         elif self.dataset_name in ("cityscapes", "cityscapes-c", "acdc"):
+            print(f"Using {self.dataset_name} categories for embedding generation")
+            print(list(CITYSCAPES_CATEGORIES))
             self.class_names = list(CITYSCAPES_CATEGORIES)
         else:
+            print("Using ADE20K categories for embedding generation")
+            print(list(ADE20K_CATEGORIES))
             self.class_names = list(ADE20K_CATEGORIES)
 
         self.pipe = pipe

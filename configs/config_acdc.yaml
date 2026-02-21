@@ -11,7 +11,7 @@ defaults:
 
 # Experiment identification
 experiment:
-  name: acdc_tta_1e-5_new
+  name: acdc_train_tta_sd3_1080_512_171
   id: 1
 
 # Device configuration
