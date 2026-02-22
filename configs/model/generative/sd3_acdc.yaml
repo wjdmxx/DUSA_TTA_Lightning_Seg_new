@@ -43,5 +43,6 @@ timestep_range: [0.25, 0.25]
 
 # Text embedding configuration
 text_embedding:
-  prompt_template: "a photo of a {}"
+  # prompt_template: "a photo of a {}"
+  prompt_template: "a dashcam photo of {}"
   cache_dir: ./embeddings_cache
