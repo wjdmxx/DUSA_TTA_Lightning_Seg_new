@@ -215,22 +215,26 @@ class CombinedModel(nn.Module):
             self.generative.config_grad(False)
 
     def get_trainable_params(self):
-        """Get list of trainable parameters.
+        """Get trainable parameters grouped by model component.
 
         Returns:
-            List of parameters with requires_grad=True
+            Dictionary with keys "discriminative" and "generative",
+            each containing a list of parameters with requires_grad=True.
         """
-        params = []
+        param_groups = {
+            "discriminative": [],
+            "generative": [],
+        }
 
         # Discriminative params
         for param in self.discriminative.parameters():
             if param.requires_grad:
-                params.append(param)
+                param_groups["discriminative"].append(param)
 
         # Generative params
         if self.generative is not None:
             for param in self.generative.transformer.parameters():
                 if param.requires_grad:
-                    params.append(param)
+                    param_groups["generative"].append(param)
 
-        return params
+        return param_groups

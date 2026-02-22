@@ -111,46 +111,77 @@ class TTARunner:
         logger.info("TTA Runner setup complete")
 
     def _setup_optimizer(self) -> None:
-        """Setup optimizer for TTA."""
+        """Setup optimizer for TTA.
+
+        Supports separate learning rates for discriminative and generative models.
+        Config keys (under tta.optimizer):
+            lr: Global default learning rate (fallback)
+            lr_discriminative: Learning rate for discriminative model (optional)
+            lr_generative: Learning rate for generative model (optional)
+        If lr_discriminative / lr_generative are not set, they fall back to lr.
+        """
         opt_config = self.config.get("tta", {}).get("optimizer", {})
         opt_type = opt_config.get("type", "AdamW")
-        lr = opt_config.get("lr", 6e-5)
+        lr_default = opt_config.get("lr", 6e-5)
+        lr_disc = opt_config.get("lr_discriminative", lr_default)
+        lr_gen = opt_config.get("lr_generative", lr_default)
         weight_decay = opt_config.get("weight_decay", 0.0)
         betas = tuple(opt_config.get("betas", [0.9, 0.999]))
 
-        # Get trainable parameters
-        params = self.model.get_trainable_params()
+        # Get trainable parameters grouped by model component
+        param_groups_dict = self.model.get_trainable_params()
 
-        if len(params) == 0:
+        # Build optimizer parameter groups
+        optimizer_param_groups = []
+        total_params = 0
+
+        disc_params = param_groups_dict.get("discriminative", [])
+        if disc_params:
+            optimizer_param_groups.append({
+                "params": disc_params,
+                "lr": lr_disc,
+                "name": "discriminative",
+            })
+            total_params += len(disc_params)
+            logger.info(f"  Discriminative: {len(disc_params)} params, lr={lr_disc}")
+
+        gen_params = param_groups_dict.get("generative", [])
+        if gen_params:
+            optimizer_param_groups.append({
+                "params": gen_params,
+                "lr": lr_gen,
+                "name": "generative",
+            })
+            total_params += len(gen_params)
+            logger.info(f"  Generative: {len(gen_params)} params, lr={lr_gen}")
+
+        if total_params == 0:
             logger.warning("No trainable parameters found!")
             self.optimizer = None
             return
 
-        # Create optimizer
+        # Create optimizer with parameter groups
         if opt_type.lower() == "adamw":
             self.optimizer = torch.optim.AdamW(
-                params,
-                lr=lr,
+                optimizer_param_groups,
                 betas=betas,
                 weight_decay=weight_decay,
             )
         elif opt_type.lower() == "adam":
             self.optimizer = torch.optim.Adam(
-                params,
-                lr=lr,
+                optimizer_param_groups,
                 betas=betas,
             )
         elif opt_type.lower() == "sgd":
             self.optimizer = torch.optim.SGD(
-                params,
-                lr=lr,
+                optimizer_param_groups,
                 momentum=opt_config.get("momentum", 0.9),
                 weight_decay=weight_decay,
             )
         else:
             raise ValueError(f"Unknown optimizer type: {opt_type}")
 
-        logger.info(f"Optimizer: {opt_type}, lr={lr}, params={len(params)}")
+        logger.info(f"Optimizer: {opt_type}, total_params={total_params}")
 
     def run(self) -> Dict[str, float]:
         """Run TTA on all corruptions.

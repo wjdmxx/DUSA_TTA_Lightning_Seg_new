@@ -26,7 +26,9 @@ update_generative: true
 # Optimizer configuration
 optimizer:
   type: AdamW
-  lr: 1e-5
+  lr: 1e-5                    # Global default learning rate (fallback)
+  lr_discriminative: 1e-5     # Learning rate for discriminative model (optional, falls back to lr)
+  lr_generative: 1e-6         # Learning rate for generative model (optional, falls back to lr)
   betas: [0.9, 0.999]
   weight_decay: 0.0
 
