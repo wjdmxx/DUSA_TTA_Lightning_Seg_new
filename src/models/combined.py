@@ -240,8 +240,6 @@ class CombinedModel(nn.Module):
         if self.generative is not None:
             # Add learnable embeddings as a separate group
             emb_params = []
-            if getattr(self.generative, "learnable_class_emb", None) is not None and self.generative.learnable_class_emb.requires_grad:
-                emb_params.append(self.generative.learnable_class_emb)
             if getattr(self.generative, "learnable_pooled_emb", None) is not None and self.generative.learnable_pooled_emb.requires_grad:
                 emb_params.append(self.generative.learnable_pooled_emb)
             
