@@ -53,6 +53,10 @@ class SD3GenerativeModel(nn.Module):
         self.scheduler = None
         self.embedding_manager = None
         self.sliding_window = None
+        self.learnable_class_emb = None
+        self.learnable_pooled_emb = None
+
+        self.use_learnable_embeddings = config.get("learnable_embeddings", True)
 
         # Config values
         self.model_path = config.get(
@@ -102,6 +106,11 @@ class SD3GenerativeModel(nn.Module):
         self.class_embeddings, self.pooled_embeddings = (
             self.embedding_manager.get_embeddings(device="cpu")
         )
+
+        if self.use_learnable_embeddings:
+            # Initialize learnable embeddings (Addition / Residual) - initialized to 0
+            self.learnable_class_emb = nn.Parameter(torch.zeros_like(self.class_embeddings))
+            self.learnable_pooled_emb = nn.Parameter(torch.zeros_like(self.pooled_embeddings))
 
         # Extract components
         self.vae = pipe.vae.to(self.vae_device)
@@ -406,6 +415,10 @@ class SD3GenerativeModel(nn.Module):
         # class_emb: [N, seq_len, hidden], pooled_emb: [N, hidden]
         class_emb = self.class_embeddings[unique_classes.to("cpu")].to(device)
         pooled_emb = self.pooled_embeddings[unique_classes.to("cpu")].to(device)
+        
+        if self.use_learnable_embeddings and self.learnable_class_emb is not None:
+            class_emb = class_emb + self.learnable_class_emb[unique_classes.to("cpu")].to(device)
+            pooled_emb = pooled_emb + self.learnable_pooled_emb[unique_classes.to("cpu")].to(device)
 
         # Expand for batch: [N, seq_len, hidden] -> [B*N, seq_len, hidden]
         class_emb = class_emb.unsqueeze(0).expand(B, -1, -1, -1)
@@ -516,12 +529,18 @@ class SD3GenerativeModel(nn.Module):
         # VAE is always frozen
         self.vae.requires_grad_(False)
 
-        # Transformer gradients
+        # Transformer and Embedding gradients
         if requires_grad:
+            if self.use_learnable_embeddings and self.learnable_class_emb is not None:
+                self.learnable_class_emb.requires_grad_(True)
+                self.learnable_pooled_emb.requires_grad_(True)
             self.transformer.requires_grad_(True)
             # Convert trainable params to float32 for gradient computation
             for param in self.transformer.parameters():
                 if param.requires_grad and param.dtype == torch.float16:
                     param.data = param.data.float()
         else:
+            if self.use_learnable_embeddings and self.learnable_class_emb is not None:
+                self.learnable_class_emb.requires_grad_(False)
+                self.learnable_pooled_emb.requires_grad_(False)
             self.transformer.requires_grad_(False)

@@ -125,6 +125,7 @@ class TTARunner:
         lr_default = opt_config.get("lr", 6e-5)
         lr_disc = opt_config.get("lr_discriminative", lr_default)
         lr_gen = opt_config.get("lr_generative", lr_default)
+        lr_emb = opt_config.get("lr_embeddings", 1e-4)
         weight_decay = opt_config.get("weight_decay", 0.0)
         betas = tuple(opt_config.get("betas", [0.9, 0.999]))
 
@@ -154,6 +155,16 @@ class TTARunner:
             })
             total_params += len(gen_params)
             logger.info(f"  Generative: {len(gen_params)} params, lr={lr_gen}")
+
+        emb_params = param_groups_dict.get("embeddings", [])
+        if emb_params:
+            optimizer_param_groups.append({
+                "params": emb_params,
+                "lr": lr_emb,
+                "name": "embeddings",
+            })
+            total_params += len(emb_params)
+            logger.info(f"  Embeddings: {len(emb_params)} learnable params, lr={lr_emb}")
 
         if total_params == 0:
             logger.warning("No trainable parameters found!")
