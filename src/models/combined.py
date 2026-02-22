@@ -63,6 +63,11 @@ class CombinedModel(nn.Module):
             dataset_name = config.get("data", {}).get("dataset", "ADE20K-C")
             from omegaconf import OmegaConf
             OmegaConf.update(gen_config, "text_embedding.dataset", dataset_name, force_add=True)
+            
+            # Pass learnable embeddings config
+            learnable_emb = config.get("tta", {}).get("learnable_embeddings", True)
+            OmegaConf.update(gen_config, "learnable_embeddings", learnable_emb, force_add=True)
+            
             self.generative = SD3GenerativeModel(gen_config)
 
         # Store initial state for reset
@@ -233,6 +238,17 @@ class CombinedModel(nn.Module):
 
         # Generative params
         if self.generative is not None:
+            # Add learnable embeddings as a separate group
+            emb_params = []
+            if getattr(self.generative, "learnable_class_emb", None) is not None and self.generative.learnable_class_emb.requires_grad:
+                emb_params.append(self.generative.learnable_class_emb)
+            if getattr(self.generative, "learnable_pooled_emb", None) is not None and self.generative.learnable_pooled_emb.requires_grad:
+                emb_params.append(self.generative.learnable_pooled_emb)
+            
+            if emb_params:
+                param_groups["embeddings"] = emb_params
+
+            # Add transformer params
             for param in self.generative.transformer.parameters():
                 if param.requires_grad:
                     param_groups["generative"].append(param)

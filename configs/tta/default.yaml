@@ -20,6 +20,9 @@ batch_size: 1
 # - Set to 1 to disable accumulation
 accumulation_steps: 1
 
+# Whether to use learnable embeddings (Addition/Residual) for TTA
+learnable_embeddings: true
+
 # Whether to update generative model
 update_generative: true
 
@@ -28,7 +31,8 @@ optimizer:
   type: AdamW
   lr: 1e-5                    # Global default learning rate (fallback)
   lr_discriminative: 1e-5     # Learning rate for discriminative model (optional, falls back to lr)
-  lr_generative: 5e-6         # Learning rate for generative model (optional, falls back to lr)
+  lr_generative: 1e-6         # Learning rate for generative model (optional, falls back to lr)
+  lr_embeddings: 1e-4         # Learning rate for learnable embeddings (optional, falls back to 1e-4)
   betas: [0.9, 0.999]
   weight_decay: 0.0
 
