@@ -43,3 +43,4 @@ old_core_code/
 /pretrained_models/
 /test.py
 /tmp_output/
+/test*.py

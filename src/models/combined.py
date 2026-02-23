@@ -128,7 +128,7 @@ class CombinedModel(nn.Module):
         loss = None
         if self.forward_mode == "tta" and self.generative is not None:
             normed_logits = F.normalize(logits, p=2, dim=1)
-            loss = self.generative(images, normed_logits)
+            loss = self.generative(images, normed_logits, ori_logits=logits)
 
         return logits, loss
 
