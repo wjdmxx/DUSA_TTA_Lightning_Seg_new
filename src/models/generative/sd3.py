@@ -1,6 +1,7 @@
 """SD3 Generative Model for Test-Time Adaptation."""
 
 import logging
+import math
 from typing import Dict, Optional, Tuple, Union
 
 import torch
@@ -71,6 +72,10 @@ class SD3GenerativeModel(nn.Module):
         # Area-K parameters (used when class_select_method == "area_k")
         self.area_k = config.get("loss", {}).get("area_k", 5)
         self.area_threshold = config.get("loss", {}).get("area_threshold", 15.0)
+
+        # Window weighting: "none" or "entropy"
+        self.window_weighting = config.get("loss", {}).get("window_weighting", "none")
+        self.window_weighting_tau = config.get("loss", {}).get("window_weighting_tau", 1.0)
 
         # Short edge resize (independent from discriminative model)
         self.short_edge_size = config.get("short_edge_size", 512)
@@ -455,9 +460,23 @@ class SD3GenerativeModel(nn.Module):
                 gen_images, ori_logits_resized
             )
 
-        total_loss = 0.0
+        # 4. Compute per-window entropy weights (detached, no gradient)
+        if self.window_weighting == "entropy" and ori_logit_windows is not None:
+            with torch.no_grad():
+                window_entropies = []
+                for win_idx in range(num_windows):
+                    win_ori = ori_logit_windows[win_idx * B : (win_idx + 1) * B]
+                    probs = F.softmax(win_ori, dim=1)  # [B, C, H, W]
+                    ent = -(probs * probs.clamp(min=1e-8).log()).sum(dim=1)  # [B, H, W]
+                    norm_ent = ent / math.log(probs.shape[1])  # normalize to [0, 1]
+                    window_entropies.append(norm_ent.mean())  # scalar per window
+                ent_tensor = torch.stack(window_entropies)  # [num_windows]
+                weights = F.softmax(ent_tensor / self.window_weighting_tau, dim=0) * num_windows
+        else:
+            weights = torch.ones(num_windows, device=device)
 
-        # 4. Process each window
+        # 5. Process each window with entropy-based weighting
+        total_loss = 0.0
         for win_idx in range(num_windows):
             win_images = image_windows[win_idx * B : (win_idx + 1) * B]
             win_logits = logit_windows[win_idx * B : (win_idx + 1) * B]
@@ -466,7 +485,7 @@ class SD3GenerativeModel(nn.Module):
                 win_ori_logits = ori_logit_windows[win_idx * B : (win_idx + 1) * B]
 
             win_loss = self._compute_window_loss(win_images, win_logits, win_ori_logits)
-            total_loss = total_loss + win_loss / num_windows
+            total_loss = total_loss + weights[win_idx].detach() * win_loss / num_windows
 
         return total_loss
 

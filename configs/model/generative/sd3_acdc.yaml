@@ -41,6 +41,9 @@ loss:
   # Area-K parameters (used when class_select_method == "area_k")
   area_k: 5                  # Top-k classes to retain per pixel for area scoring
   area_threshold: 15.0       # Min score_c threshold to select a class
+  # Window loss weighting
+  window_weighting: none       # "none" (uniform) or "entropy" (upweight uncertain windows)
+  window_weighting_tau: 1.0    # Temperature for entropy softmax weighting (higher = more uniform)
 
 # Timestep sampling range for flow matching
 timestep_range: [0.25, 0.25]
