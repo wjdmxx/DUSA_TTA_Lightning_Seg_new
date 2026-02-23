@@ -33,10 +33,14 @@ sliding_window:
 
 # Loss configuration
 loss:
-  topk: 1                    # Number of top classes per pixel
+  class_select_method: topk  # Class selection method: "topk" or "area_k"
+  topk: 1                    # Number of top classes per pixel (used by "topk" method)
   classes_max_num: 20        # Max unique classes (exceed -> mask unselected pixels)
   classes_min_num: 0         # Min unique classes (below -> weighted sampling to fill)
   temperature: 1.0           # Softmax temperature
+  # Area-K parameters (used when class_select_method == "area_k")
+  area_k: 5                  # Top-k classes to retain per pixel for area scoring
+  area_threshold: 15.0       # Min score_c threshold to select a class
 
 # Timestep sampling range for flow matching
 timestep_range: [0.25, 0.25]

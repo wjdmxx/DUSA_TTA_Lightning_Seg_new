@@ -66,6 +66,12 @@ class SD3GenerativeModel(nn.Module):
         self.classes_min_num = config.get("loss", {}).get("classes_min_num", 5)
         self.timestep_range = config.get("timestep_range", [0.25, 0.25])
 
+        # Class selection method: "topk" or "area_k"
+        self.class_select_method = config.get("loss", {}).get("class_select_method", "topk")
+        # Area-K parameters (used when class_select_method == "area_k")
+        self.area_k = config.get("loss", {}).get("area_k", 5)
+        self.area_threshold = config.get("loss", {}).get("area_threshold", 15.0)
+
         # Short edge resize (independent from discriminative model)
         self.short_edge_size = config.get("short_edge_size", 512)
 
@@ -306,6 +312,70 @@ class SD3GenerativeModel(nn.Module):
 
         return probs, unique_classes, mask
 
+    def select_classes_area_k(
+        self,
+        logits: torch.Tensor,
+        ori_logits: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Select classes using Area-K method based on ori_logits probabilities.
+
+        Step 1: For each pixel, keep only the top area_k classes by probability,
+                zero out the rest.
+        Step 2: For each class, sum the retained probabilities across all pixels
+                in the window to get score_c.
+        Step 3: Select only classes where score_c > area_threshold.
+
+        Args:
+            logits: [B, num_classes, H, W] normed logits (used for final prob computation)
+            ori_logits: [B, num_classes, H, W] original logits (used for area-k selection)
+
+        Returns:
+            Tuple of:
+            - probs: [B, N, H, W] softmax probabilities over N selected classes
+            - unique_classes: [N] selected unique class indices
+            - mask: [B, H, W] bool tensor, True = participate in loss
+        """
+        B, C, H, W = logits.shape
+        device = logits.device
+
+        # Step 1: Compute softmax probabilities from ori_logits
+        ori_probs = F.softmax(ori_logits, dim=1)  # [B, C, H, W]
+
+        # For each pixel, keep only top-k classes, zero out the rest
+        topk_vals, topk_indices = torch.topk(ori_probs, self.area_k, dim=1)  # [B, K, H, W]
+
+        # Create a mask of retained classes per pixel
+        retained = torch.zeros_like(ori_probs)  # [B, C, H, W]
+        retained.scatter_(1, topk_indices, topk_vals)
+        # Now retained[b, c, h, w] = ori_probs[b, c, h, w] if class c is in top-k for pixel (h,w), else 0
+
+        # Step 2: Sum retained probabilities per class across all pixels and batch
+        score_c = retained.sum(dim=(0, 2, 3))  # [C]
+
+        # Step 3: Select classes where score_c > threshold
+        selected_mask = score_c > self.area_threshold  # [C]
+        unique_classes = torch.where(selected_mask)[0]  # [N]
+
+        # Fallback: if no class exceeds threshold, take the class with highest score
+        if unique_classes.shape[0] == 0:
+            unique_classes = score_c.argmax(dim=0, keepdim=True)  # [1]
+
+        logger.debug(
+            f"Area-K: k={self.area_k}, threshold={self.area_threshold}, "
+            f"selected {unique_classes.shape[0]} classes: {unique_classes.tolist()}, "
+            f"scores: {score_c[unique_classes].tolist()}"
+        )
+
+        # All pixels participate in loss (no masking needed for area-k)
+        mask = torch.ones(B, H, W, dtype=torch.bool, device=device)
+
+        # Gather logits for selected classes and compute softmax
+        N = unique_classes.shape[0]
+        gathered_logits = logits[:, unique_classes, :, :]  # [B, N, H, W]
+        probs = F.softmax(gathered_logits, dim=1)  # [B, N, H, W]
+
+        return probs, unique_classes, mask
+
     def compute_weighted_velocity(
         self,
         pred_velocity: torch.Tensor,
@@ -332,6 +402,7 @@ class SD3GenerativeModel(nn.Module):
         self,
         images: torch.Tensor,
         logits: torch.Tensor,
+        ori_logits: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Forward pass computing TTA loss.
 
@@ -340,7 +411,8 @@ class SD3GenerativeModel(nn.Module):
 
         Args:
             images: [B, C, H, W] input images at original resolution (values in [0, 1])
-            logits: [B, num_classes, H_d/4, W_d/4] segmentation logits from disc model
+            logits: [B, num_classes, H_d/4, W_d/4] segmentation logits from disc model (normed)
+            ori_logits: [B, num_classes, H_d/4, W_d/4] original logits (un-normed), used by area_k
 
         Returns:
             loss: Scalar loss for backpropagation
@@ -360,11 +432,28 @@ class SD3GenerativeModel(nn.Module):
             align_corners=False,
         )  # [B, C_cls, H_g, W_g]
 
+        # 2b. Resize ori_logits if provided
+        ori_logits_resized = None
+        if ori_logits is not None:
+            ori_logits_resized = F.interpolate(
+                ori_logits,
+                size=(gen_h, gen_w),
+                mode="bilinear",
+                align_corners=False,
+            )  # [B, C_cls, H_g, W_g]
+
         # 3. Apply 2D sliding window to both images and logits
         image_windows, logit_windows, positions = self.sliding_window.slide_pair(
             gen_images, logits_resized
         )
         num_windows = len(positions)
+
+        # Also slide ori_logits if available
+        ori_logit_windows = None
+        if ori_logits_resized is not None:
+            _, ori_logit_windows, _ = self.sliding_window.slide_pair(
+                gen_images, ori_logits_resized
+            )
 
         total_loss = 0.0
 
@@ -372,8 +461,11 @@ class SD3GenerativeModel(nn.Module):
         for win_idx in range(num_windows):
             win_images = image_windows[win_idx * B : (win_idx + 1) * B]
             win_logits = logit_windows[win_idx * B : (win_idx + 1) * B]
+            win_ori_logits = None
+            if ori_logit_windows is not None:
+                win_ori_logits = ori_logit_windows[win_idx * B : (win_idx + 1) * B]
 
-            win_loss = self._compute_window_loss(win_images, win_logits)
+            win_loss = self._compute_window_loss(win_images, win_logits, win_ori_logits)
             total_loss = total_loss + win_loss / num_windows
 
         return total_loss
@@ -382,12 +474,14 @@ class SD3GenerativeModel(nn.Module):
         self,
         images: torch.Tensor,
         logits: torch.Tensor,
+        ori_logits: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Compute loss for a single window.
 
         Args:
             images: [B, 3, S, S] window images (S = window_size)
-            logits: [B, num_classes, S, S] window logits (same spatial size as images)
+            logits: [B, num_classes, S, S] window logits (normed, same spatial size as images)
+            ori_logits: [B, num_classes, S, S] original logits (optional, for area_k)
 
         Returns:
             Loss tensor
@@ -405,9 +499,16 @@ class SD3GenerativeModel(nn.Module):
         # Downsample logits to latent resolution: [B, C, S/8, S/8]
         logits_downsampled = downsample_logits_to_latent(logits, (latent_h, latent_w))
 
-        # Select N unique classes and compute softmax probabilities over them
-        # probs: [B, N, H, W], unique_classes: [N], mask: [B, H, W]
-        probs, unique_classes, mask = self.select_classes(logits_downsampled)
+        # Select N unique classes based on configured method
+        if self.class_select_method == "area_k" and ori_logits is not None:
+            # Downsample ori_logits to latent resolution too
+            ori_logits_downsampled = downsample_logits_to_latent(ori_logits, (latent_h, latent_w))
+            probs, unique_classes, mask = self.select_classes_area_k(
+                logits_downsampled, ori_logits_downsampled
+            )
+        else:
+            # Default: topk method
+            probs, unique_classes, mask = self.select_classes(logits_downsampled)
         N = unique_classes.shape[0]
         
         # Get text embeddings for selected classes
