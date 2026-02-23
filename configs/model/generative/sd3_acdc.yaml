@@ -33,7 +33,7 @@ sliding_window:
 
 # Loss configuration
 loss:
-  class_select_method: topk  # Class selection method: "topk" or "area_k"
+  class_select_method: area_k  # Class selection method: "topk" or "area_k"
   topk: 1                    # Number of top classes per pixel (used by "topk" method)
   classes_max_num: 20        # Max unique classes (exceed -> mask unselected pixels)
   classes_min_num: 0         # Min unique classes (below -> weighted sampling to fill)
@@ -48,7 +48,8 @@ timestep_range: [0.25, 0.25]
 # Text embedding configuration
 text_embedding:
   # To use a template format:
-  prompt_template: "a dashcam photo of {}"
+  prompt_template: "a photo of a {}"
+  # prompt_template: "a dashcam photo of {}"
   
   # To use custom prompts per category, uncomment the lines below.
   # If 'custom_prompts' is defined, the system will use it and calculate the hash based on its contents.
