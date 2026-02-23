@@ -43,6 +43,31 @@ timestep_range: [0.25, 0.25]
 
 # Text embedding configuration
 text_embedding:
-  # prompt_template: "a photo of a {}"
+  # To use a template format:
   prompt_template: "a dashcam photo of {}"
+  
+  # To use custom prompts per category, uncomment the lines below.
+  # If 'custom_prompts' is defined, the system will use it and calculate the hash based on its contents.
+  # If a class is missing from custom_prompts, it will fallback to using 'prompt_template'.
+  # custom_prompts:
+  #   "road":          "a road"
+  #   "sidewalk":      "a sidewalk"
+  #   "building":      "a building"
+  #   "wall":          "a concrete wall"
+  #   "fence":         "a fence"
+  #   "pole":          "a street pole"
+  #   "traffic light": "a traffic light"
+  #   "traffic sign":  "a traffic sign"
+  #   "vegetation":    "trees and bushes"
+  #   "terrain":       "grass and dirt ground"
+  #   "sky":           "the sky"
+  #   "person":        "a pedestrian"
+  #   "rider":         "a person on a bicycle"
+  #   "car":           "a car"
+  #   "truck":         "a truck"
+  #   "bus":           "a city bus"
+  #   "train":         "a tram on the street"
+  #   "motorcycle":    "a motorcycle"
+  #   "bicycle":       "a bicycle"
+
   cache_dir: ./embeddings_cache

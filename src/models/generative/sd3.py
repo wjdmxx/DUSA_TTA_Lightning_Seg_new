@@ -107,9 +107,9 @@ class SD3GenerativeModel(nn.Module):
         )
 
         if self.use_learnable_embeddings:
-            # Initialize learnable embeddings (Addition / Residual) - initialized to 0
-            # Per-class pooled embedding: [num_classes, 2048]
-            self.learnable_pooled_emb = nn.Parameter(torch.zeros_like(self.pooled_embeddings))
+            # Initialize a GLOBAL shared learnable embedding (Addition / Residual) - initialized to 0
+            # Shared across all classes [1, 2048] to represent global domain shift (e.g., weather, rain, fog)
+            self.learnable_pooled_emb = nn.Parameter(torch.zeros(1, self.pooled_embeddings.shape[1]))
 
         # Extract components
         self.vae = pipe.vae.to(self.vae_device)
@@ -416,8 +416,8 @@ class SD3GenerativeModel(nn.Module):
         pooled_emb = self.pooled_embeddings[unique_classes.to("cpu")].to(device)
         
         if self.use_learnable_embeddings and self.learnable_pooled_emb is not None:
-            # Add per-class domain shift to each class's pooled embedding
-            pooled_emb = pooled_emb + self.learnable_pooled_emb[unique_classes.to("cpu")].to(device)
+            # Add shared global domain shift to every class's pooled embedding via broadcasting
+            pooled_emb = pooled_emb + self.learnable_pooled_emb.to(device)
 
         # Expand for batch: [N, seq_len, hidden] -> [B*N, seq_len, hidden]
         class_emb = class_emb.unsqueeze(0).expand(B, -1, -1, -1)

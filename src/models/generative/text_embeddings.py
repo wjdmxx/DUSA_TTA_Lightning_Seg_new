@@ -4,9 +4,10 @@ import hashlib
 import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
+import json
 
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from ...utils.categories import ADE20K_CATEGORIES, CITYSCAPES_CATEGORIES
@@ -37,6 +38,7 @@ class TextEmbeddingManager:
             pipe: Optional StableDiffusion3Pipeline for computing embeddings
         """
         self.prompt_template = config.get("prompt_template", "a photo of a {}")
+        self.custom_prompts = config.get("custom_prompts", None)
         self.cache_dir = Path(config.get("cache_dir", "./embeddings_cache"))
 
         # Determine dataset name for cache differentiation
@@ -69,10 +71,19 @@ class TextEmbeddingManager:
         Returns:
             Path to cache file
         """
-        # Create hash of prompt template for unique filename
-        hash_input = f"{self.dataset_name}_{self.prompt_template}"
+        # Create hash of prompt template or custom prompts for unique filename
+        if self.custom_prompts is not None:
+            if isinstance(self.custom_prompts, DictConfig):
+                prompts_dict = OmegaConf.to_container(self.custom_prompts, resolve=True)
+            else:
+                prompts_dict = dict(self.custom_prompts)
+            prompts_str = json.dumps(prompts_dict, sort_keys=True)
+            hash_input = f"{self.dataset_name}_custom_{prompts_str}"
+        else:
+            hash_input = f"{self.dataset_name}_{self.prompt_template}"
+
         prompt_hash = hashlib.md5(
-            hash_input.encode()
+            hash_input.encode("utf-8")
         ).hexdigest()[:8]
         # Use dataset-aware filename to avoid cache collisions between
         # ADE20K (150 classes) and Cityscapes/ACDC (19 classes)
@@ -146,8 +157,16 @@ class TextEmbeddingManager:
             pooled_embeddings_list = []
 
             for class_name in tqdm(self.class_names, desc="Computing embeddings"):
-                # Format prompt
-                prompt = self.prompt_template.format(class_name.replace("_", " "))
+                # Format or retrieve prompt
+                prompt = None
+                if self.custom_prompts is not None:
+                    if class_name in self.custom_prompts:
+                        prompt = str(self.custom_prompts[class_name])
+                    else:
+                        logger.warning(f"No custom prompt found for '{class_name}'. Falling back to template.")
+
+                if prompt is None:
+                    prompt = self.prompt_template.format(class_name.replace("_", " "))
                 
                 # Encode prompt using SD3 pipeline
                 with torch.no_grad():
