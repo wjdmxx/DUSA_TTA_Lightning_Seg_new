@@ -33,7 +33,7 @@ sliding_window:
 
 # Loss configuration
 loss:
-  class_select_method: area_k  # Class selection method: "topk" or "area_k"
+  class_select_method: topk  # Class selection method: "topk" or "area_k"
   topk: 1                    # Number of top classes per pixel (used by "topk" method)
   classes_max_num: 20        # Max unique classes (exceed -> mask unselected pixels)
   classes_min_num: 0         # Min unique classes (below -> weighted sampling to fill)
