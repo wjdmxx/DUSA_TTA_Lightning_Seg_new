@@ -518,10 +518,16 @@ class SD3GenerativeModel(nn.Module):
         # Downsample logits to latent resolution: [B, C, S/8, S/8]
         logits_downsampled = downsample_logits_to_latent(logits, (latent_h, latent_w))
 
+        # Mask out large background classes (0: road, 2: building, 8: vegetation, 13: car)
+        # by setting their logits to -inf so they are never selected
+        ignore_classes = [0, 2, 8, 13]
+        logits_downsampled[:, ignore_classes, :, :] = -float('inf')
+
         # Select N unique classes based on configured method
         if self.class_select_method == "area_k" and ori_logits is not None:
             # Downsample ori_logits to latent resolution too
             ori_logits_downsampled = downsample_logits_to_latent(ori_logits, (latent_h, latent_w))
+            ori_logits_downsampled[:, ignore_classes, :, :] = -float('inf')
             probs, unique_classes, mask = self.select_classes_area_k(
                 logits_downsampled, ori_logits_downsampled
             )
