@@ -30,6 +30,16 @@ short_edge_size: 1080
 sliding_window:
   size: 512      # Window size (square)
   stride: 171    # Stride for both H and W directions
+  mode: grid     # "grid" (固定网格滑窗) | "adaptive" (熵引导自适应窗口)
+  # Adaptive window params (仅 mode=adaptive 时生效)
+  adaptive:
+    entropy_threshold: null   # 熵阈值, null=自动 (mean + 0.5*std)
+    min_box_size: 128         # 最小窗口边长 (小于此值会被扩展)
+    max_box_size: 512         # 最大窗口边长 (等于 window size)
+    dilate_rounds: 5          # 形态学膨胀轮数 (合并间隙≤10px的邻近高熵区域)
+    min_windows: 2            # 最少窗口数 (不够则回退 grid 模式)
+    max_windows: 8            # 最多窗口数 (按熵排序截断)
+    merge_min_distance: 64    # 框中心最小间距 (px), 中心距小于此值的框会被丢弃
 
 # Loss configuration
 loss:
@@ -44,6 +54,10 @@ loss:
   # Window loss weighting
   window_weighting: entropy       # "none" (uniform) or "entropy" (upweight uncertain windows)
   window_weighting_tau: 1.0    # Temperature for entropy softmax weighting (higher = more uniform)
+  # Ignore classes (忽略大面积背景类，不参与类别选择)
+  ignore_classes:
+    enabled: true                   # 是否开启类别忽略
+    class_ids: [0, 2, 8, 13]        # road(0), building(2), vegetation(8), car(13)
 
 # Timestep sampling range for flow matching
 timestep_range: [0.25, 0.25]

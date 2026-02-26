@@ -77,6 +77,11 @@ class SD3GenerativeModel(nn.Module):
         self.window_weighting = config.get("loss", {}).get("window_weighting", "none")
         self.window_weighting_tau = config.get("loss", {}).get("window_weighting_tau", 1.0)
 
+        # Ignore classes config
+        ignore_cfg = config.get("loss", {}).get("ignore_classes", {})
+        self.ignore_classes_enabled = ignore_cfg.get("enabled", False)
+        self.ignore_classes = list(ignore_cfg.get("class_ids", []))
+
         # Short edge resize (independent from discriminative model)
         self.short_edge_size = config.get("short_edge_size", 512)
 
@@ -84,6 +89,19 @@ class SD3GenerativeModel(nn.Module):
         sw_config = config.get("sliding_window", {})
         self.window_size = sw_config.get("size", 512)
         self.stride = sw_config.get("stride", 512)
+
+        # Sliding window mode: "grid" (existing) or "adaptive" (entropy-guided)
+        self.window_mode = sw_config.get("mode", "grid")
+
+        # Adaptive window params
+        adapt_cfg = sw_config.get("adaptive", {})
+        self.adapt_entropy_threshold = adapt_cfg.get("entropy_threshold", None)  # None = auto
+        self.adapt_min_box_size = adapt_cfg.get("min_box_size", 128)
+        self.adapt_max_box_size = adapt_cfg.get("max_box_size", 512)
+        self.adapt_dilate_rounds = adapt_cfg.get("dilate_rounds", 5)
+        self.adapt_min_windows = adapt_cfg.get("min_windows", 2)
+        self.adapt_max_windows = adapt_cfg.get("max_windows", 8)
+        self.adapt_merge_min_distance = adapt_cfg.get("merge_min_distance", 64)
 
         # Device config
         self.vae_device = config.get("vae", {}).get("device", "cuda:0")
@@ -403,6 +421,168 @@ class SD3GenerativeModel(nn.Module):
         weighted = torch.einsum("b n h w, b n c h w -> b c h w", probs, pred_velocity)
         return weighted
 
+    def _find_adaptive_windows(
+        self,
+        ori_logits: torch.Tensor,
+    ) -> list:
+        """Find adaptive windows guided by entropy from ori_logits.
+
+        Steps:
+          1. Compute per-pixel entropy from ori_logits
+          2. Binarize via threshold (auto or manual)
+          3. Morphological dilation to merge nearby hot regions
+          4. Connected-component-like analysis via iterative max-pool labeling
+          5. Extract bounding boxes, post-process (square, clamp size)
+
+        Args:
+            ori_logits: [B, C, H, W] original logits (un-normed)
+
+        Returns:
+            List of (y, x, h, w) tuples defining each adaptive window
+        """
+        device = ori_logits.device
+        B, C, H, W = ori_logits.shape
+
+        with torch.no_grad():
+            # 1. Compute entropy map (average over batch)
+            probs = F.softmax(ori_logits, dim=1)  # [B, C, H, W]
+            ent = -(probs * probs.clamp(min=1e-10).log()).sum(dim=1)  # [B, H, W]
+            entropy_map = ent.mean(dim=0)  # [H, W]
+
+            # 2. Binarize
+            if self.adapt_entropy_threshold is not None:
+                threshold = self.adapt_entropy_threshold
+            else:
+                # Auto threshold: mean + 0.5 * std
+                e_mean = entropy_map.mean()
+                e_std = entropy_map.std()
+                threshold = (e_mean + 0.5 * e_std).item()
+
+            hot_mask = (entropy_map > threshold).float()  # [H, W]
+
+            # 3. Morphological dilation (max_pool to merge nearby regions)
+            mask_4d = hot_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+            for _ in range(self.adapt_dilate_rounds):
+                mask_4d = F.max_pool2d(mask_4d, kernel_size=3, stride=1, padding=1)
+            hot_mask = mask_4d.squeeze()  # [H, W]
+
+            # 4. Connected component extraction via iterative labeling
+            #    Use a simple approach: find non-zero bounding boxes by scanning rows/cols
+            hot_bool = hot_mask > 0.5
+
+            if not hot_bool.any():
+                # No high-entropy regions found, return empty
+                return []
+
+            # Label connected components using iterative flood-fill simulation
+            # For efficiency on GPU: use scipy on CPU for small maps
+            hot_np = hot_bool.cpu().numpy()
+
+            try:
+                from scipy import ndimage
+                labeled, num_features = ndimage.label(hot_np)
+            except ImportError:
+                # Fallback: treat entire hot region as one component
+                labeled = hot_np.astype(int)
+                num_features = 1 if hot_np.any() else 0
+
+            if num_features == 0:
+                return []
+
+            # 5. Extract bounding boxes for each component
+            raw_boxes = []  # (y, x, h, w, mean_entropy)
+            for comp_id in range(1, num_features + 1):
+                ys, xs = (labeled == comp_id).nonzero()
+                if len(ys) == 0:
+                    continue
+                y_min, y_max = ys.min(), ys.max()
+                x_min, x_max = xs.min(), xs.max()
+                box_h = y_max - y_min + 1
+                box_w = x_max - x_min + 1
+
+                # Compute mean entropy in this region for priority sorting
+                region_entropy = entropy_map[y_min:y_max+1, x_min:x_max+1].mean().item()
+                raw_boxes.append((y_min, x_min, box_h, box_w, region_entropy))
+
+            # Sort by mean entropy (highest first)
+            raw_boxes.sort(key=lambda b: b[4], reverse=True)
+
+            # 6. Post-process: make square, clamp size, ensure in-bounds
+            windows = []
+            min_s = self.adapt_min_box_size
+            max_s = self.adapt_max_box_size
+
+            for y, x, bh, bw, _ent in raw_boxes:
+                # Make square: use max(bh, bw)
+                side = max(bh, bw)
+                # Clamp to [min_size, max_size]
+                side = max(min_s, min(side, max_s))
+
+                # Center the square on the original box center
+                cy = y + bh // 2
+                cx = x + bw // 2
+                y0 = max(0, cy - side // 2)
+                x0 = max(0, cx - side // 2)
+
+                # Ensure in-bounds
+                if y0 + side > H:
+                    y0 = max(0, H - side)
+                if x0 + side > W:
+                    x0 = max(0, W - side)
+
+                # Final clamp (if image is smaller than min_size)
+                actual_h = min(side, H - y0)
+                actual_w = min(side, W - x0)
+
+                # Check minimum distance to existing windows (center-to-center)
+                new_cy = y0 + actual_h // 2
+                new_cx = x0 + actual_w // 2
+                too_close = False
+                for wy, wx, wh, ww in windows:
+                    exist_cy = wy + wh // 2
+                    exist_cx = wx + ww // 2
+                    dist = ((new_cy - exist_cy) ** 2 + (new_cx - exist_cx) ** 2) ** 0.5
+                    if dist < self.adapt_merge_min_distance:
+                        too_close = True
+                        break
+
+                if too_close:
+                    continue
+
+                windows.append((y0, x0, actual_h, actual_w))
+
+                if len(windows) >= self.adapt_max_windows:
+                    break
+
+        return windows
+
+    def _crop_and_resize_windows(
+        self,
+        tensor: torch.Tensor,
+        windows: list,
+        target_size: int,
+    ) -> torch.Tensor:
+        """Crop windows from tensor and resize each to target_size × target_size.
+
+        Args:
+            tensor: [B, C, H, W]
+            windows: List of (y, x, h, w)
+            target_size: Target square size
+
+        Returns:
+            [num_windows * B, C, target_size, target_size]
+        """
+        crops = []
+        for y, x, h, w in windows:
+            crop = tensor[:, :, y:y+h, x:x+w]  # [B, C, h, w]
+            if h != target_size or w != target_size:
+                crop = F.interpolate(
+                    crop, size=(target_size, target_size),
+                    mode="bilinear", align_corners=False,
+                )
+            crops.append(crop)
+        return torch.cat(crops, dim=0)  # [num_windows * B, C, target_size, target_size]
+
     def forward(
         self,
         images: torch.Tensor,
@@ -412,7 +592,7 @@ class SD3GenerativeModel(nn.Module):
         """Forward pass computing TTA loss.
 
         Internally resizes images to gen resolution, resizes disc logits
-        to match, applies 2D sliding window, and computes loss per window.
+        to match, applies 2D sliding window (grid or adaptive), and computes loss per window.
 
         Args:
             images: [B, C, H, W] input images at original resolution (values in [0, 1])
@@ -447,6 +627,25 @@ class SD3GenerativeModel(nn.Module):
                 align_corners=False,
             )  # [B, C_cls, H_g, W_g]
 
+        # ── Branch by window mode ──
+        if self.window_mode == "adaptive" and ori_logits_resized is not None:
+            return self._forward_adaptive(
+                gen_images, logits_resized, ori_logits_resized, B, device
+            )
+        else:
+            return self._forward_grid(
+                gen_images, logits_resized, ori_logits_resized, B, device
+            )
+
+    def _forward_grid(
+        self,
+        gen_images: torch.Tensor,
+        logits_resized: torch.Tensor,
+        ori_logits_resized: Optional[torch.Tensor],
+        B: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Original grid-based sliding window forward."""
         # 3. Apply 2D sliding window to both images and logits
         image_windows, logit_windows, positions = self.sliding_window.slide_pair(
             gen_images, logits_resized
@@ -489,6 +688,77 @@ class SD3GenerativeModel(nn.Module):
 
         return total_loss
 
+    def _forward_adaptive(
+        self,
+        gen_images: torch.Tensor,
+        logits_resized: torch.Tensor,
+        ori_logits_resized: torch.Tensor,
+        B: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Entropy-guided adaptive window forward.
+
+        Finds high-entropy regions, crops them, resizes to window_size,
+        and computes loss on those focused regions.
+        """
+        # Find adaptive windows from entropy
+        adaptive_windows = self._find_adaptive_windows(ori_logits_resized)
+
+        # Fallback: if too few adaptive windows, supplement with grid windows
+        if len(adaptive_windows) < self.adapt_min_windows:
+            logger.info(
+                f"Adaptive: only {len(adaptive_windows)} windows found, "
+                f"falling back to grid mode (min={self.adapt_min_windows})"
+            )
+            return self._forward_grid(
+                gen_images, logits_resized, ori_logits_resized, B, device
+            )
+
+        num_windows = len(adaptive_windows)
+        logger.debug(
+            f"Adaptive windows: {num_windows} regions, "
+            f"sizes: {[(h, w) for _, _, h, w in adaptive_windows]}"
+        )
+
+        # Crop and resize all windows to standard window_size
+        target_size = self.window_size
+        image_crops = self._crop_and_resize_windows(
+            gen_images, adaptive_windows, target_size
+        )  # [num_windows * B, 3, S, S]
+        logit_crops = self._crop_and_resize_windows(
+            logits_resized, adaptive_windows, target_size
+        )  # [num_windows * B, C_cls, S, S]
+        ori_logit_crops = self._crop_and_resize_windows(
+            ori_logits_resized, adaptive_windows, target_size
+        )  # [num_windows * B, C_cls, S, S]
+
+        # Compute per-window entropy weights
+        if self.window_weighting == "entropy":
+            with torch.no_grad():
+                window_entropies = []
+                for win_idx in range(num_windows):
+                    win_ori = ori_logit_crops[win_idx * B : (win_idx + 1) * B]
+                    probs = F.softmax(win_ori, dim=1)
+                    ent = -(probs * probs.clamp(min=1e-8).log()).sum(dim=1)
+                    norm_ent = ent / math.log(probs.shape[1])
+                    window_entropies.append(norm_ent.mean())
+                ent_tensor = torch.stack(window_entropies)
+                weights = F.softmax(ent_tensor / self.window_weighting_tau, dim=0) * num_windows
+        else:
+            weights = torch.ones(num_windows, device=device)
+
+        # Process each window
+        total_loss = 0.0
+        for win_idx in range(num_windows):
+            win_images = image_crops[win_idx * B : (win_idx + 1) * B]
+            win_logits = logit_crops[win_idx * B : (win_idx + 1) * B]
+            win_ori_logits = ori_logit_crops[win_idx * B : (win_idx + 1) * B]
+
+            win_loss = self._compute_window_loss(win_images, win_logits, win_ori_logits)
+            total_loss = total_loss + weights[win_idx].detach() * win_loss / num_windows
+
+        return total_loss
+
     def _compute_window_loss(
         self,
         images: torch.Tensor,
@@ -518,16 +788,16 @@ class SD3GenerativeModel(nn.Module):
         # Downsample logits to latent resolution: [B, C, S/8, S/8]
         logits_downsampled = downsample_logits_to_latent(logits, (latent_h, latent_w))
 
-        # Mask out large background classes (0: road, 2: building, 8: vegetation, 13: car)
-        # by setting their logits to -inf so they are never selected
-        ignore_classes = [0, 2, 8, 13]
-        logits_downsampled[:, ignore_classes, :, :] = -float('inf')
+        # Mask out configured ignore classes by setting their logits to -inf
+        if self.ignore_classes_enabled and self.ignore_classes:
+            logits_downsampled[:, self.ignore_classes, :, :] = -float('inf')
 
         # Select N unique classes based on configured method
         if self.class_select_method == "area_k" and ori_logits is not None:
             # Downsample ori_logits to latent resolution too
             ori_logits_downsampled = downsample_logits_to_latent(ori_logits, (latent_h, latent_w))
-            ori_logits_downsampled[:, ignore_classes, :, :] = -float('inf')
+            if self.ignore_classes_enabled and self.ignore_classes:
+                ori_logits_downsampled[:, self.ignore_classes, :, :] = -float('inf')
             probs, unique_classes, mask = self.select_classes_area_k(
                 logits_downsampled, ori_logits_downsampled
             )
