@@ -11,7 +11,7 @@ defaults:
 
 # Experiment identification
 experiment:
-  name: acdc_train_tta_sd3_1080_512_171_photo_1e-5
+  name: acdc_train_tta_sd3_1080_512_171_photo_1e-5_no_big4_area_k_entropy_loss
   id: 1
 
 # Device configuration
